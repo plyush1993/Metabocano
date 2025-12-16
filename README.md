@@ -1,7 +1,7 @@
 # Metabocano <img src="sticker.png" align="right" height="180" width="160">
 
 ### Description :bookmark_tabs:
-The [Shiny App](https://shiny.posit.co/) for basic statistics in metabolomics
+The [Shiny App](https://shiny.posit.co/) for making an interactive volcano plot for metabolomics data.
 
 to add ...
 
