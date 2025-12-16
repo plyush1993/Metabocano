@@ -6,7 +6,7 @@ The [Shiny App](https://shiny.posit.co/) for basic statistics in metabolomics
 to add ...
 
 The App is accessible through the link: <br>
-[**`https://plyush1993.shinyapps.io/ShinyMetaboStats/`**](https://plyush1993.shinyapps.io/Metabocano)
+[**`https://plyush1993.shinyapps.io/Metabocano/`**](https://plyush1993.shinyapps.io/Metabocano)
 <br>
 <br>
 ### Contact :mailbox_with_mail:
