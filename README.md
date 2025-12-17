@@ -5,7 +5,7 @@ The [Shiny App](https://shiny.posit.co/) for making an enhanced interactive volc
 For now, the App is available to directly read the output peak table from [mzmine](https://mzio.io/mzmine-news/), join it with the annotation table from [SIRIUS](https://bio.informatik.uni-jena.de/software/sirius/), perform imputation, and statistical tests. After preprocessing, the App generates several outputs: interactive [Plotly](https://plotly.com/)-type volcano plot, the table reformatted for [MetaboAnalyst](https://www.metaboanalyst.ca/home.xhtml) input, and a statistical table with SIRIUS annotation.
 
 > [!IMPORTANT]
->The App's script was compiled using [R version 4.1.2](https://cran.r-project.org/bin/windows/base/old/4.1.2/) and its stable Web version is accessible through the link: <br>
+>The [App's script](https://github.com/plyush1993/Metabocano/blob/main/app.R) was compiled using [R version 4.1.2](https://cran.r-project.org/bin/windows/base/old/4.1.2/) and its stable Web version is accessible through the link: <br>
 [**`https://plyush1993.shinyapps.io/Metabocano/`**](https://plyush1993.shinyapps.io/Metabocano)
 <br>
 
