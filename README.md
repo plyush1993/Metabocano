@@ -5,10 +5,11 @@ The [Shiny App](https://shiny.posit.co/) for making an enhanced interactive volc
 
 to add ...
 
-The App is accessible through the link: <br>
+> [!IMPORTANT]
+>The App's script was compiled using [R version 4.1.2](https://cran.r-project.org/bin/windows/base/old/4.1.2/) and is accessible through the link: <br>
 [**`https://plyush1993.shinyapps.io/Metabocano/`**](https://plyush1993.shinyapps.io/Metabocano)
 <br>
-<br>
+
 ### Contact :mailbox_with_mail:
 Please send any comment, suggestion or question you may have to the author (Dr. Ivan Plyushchenko):  
 <div> 
