@@ -177,7 +177,7 @@ parse_feature_table_to_matrix <- function(raw_df,
 # Imputation (MVI)
 impute_lod_random <- function(X,
                               noise_mode = c("quantile", "manual"),
-                              noise_quantile = 0.02,
+                              noise_quantile = 0.25,
                               noise_manual = 50,
                               sd_val = 30,
                               seed = 1234) {
@@ -185,12 +185,11 @@ impute_lod_random <- function(X,
   X <- as.matrix(X)
   X[X == 0] <- NA
 
-  nz <- as.numeric(X[is.finite(X) & !is.na(X) & X > 0])
+  nz <- 1:min(X, na.rm = T)
   if (!length(nz)) return(X * 0)
 
   if (noise_mode == "quantile") {
-    q <- max(min(as.numeric(noise_quantile), 1), 0)
-    noise <- as.numeric(stats::quantile(nz, probs = q, na.rm = TRUE))
+    noise <- as.numeric(stats::quantile(nz, probs = noise_quantile, na.rm = TRUE))
   } else {
     noise <- as.numeric(noise_manual)
   }
@@ -283,6 +282,18 @@ compute_stats_long <- function(df_used,
 ui <- fluidPage(
   useShinyjs(),
 
+tags$head(tags$style(HTML("
+  .app-footer { position: fixed; left:0; right:0; bottom:0; 
+                text-align:center; font-size:12px; opacity:0.75;
+                padding:8px; background: rgba(255,255,255,0.8);
+                border-top: 1px solid #ddd; z-index: 9999; }
+  body { padding-bottom: 45px; }
+"))),
+
+div(class = "app-footer",
+    HTML("Created by: Dr. Ivan Plyushchenko ; Github: plyush1993")
+),
+  
   div(
   style = "
     width: 100%;
@@ -403,7 +414,7 @@ ui <- fluidPage(
                            c("Quantile of non-zero values"="quantile", "Manual value"="manual"),
                            selected = "quantile"),
               conditionalPanel(condition = "input.noise_mode == 'quantile'",
-                               numericInput("noise_quantile", "Quantile (0-1)", value = 0.02, min = 0, max = 1, step = 0.01)),
+                               numericInput("noise_quantile", "Quantile (0-1)", value = 0.25, min = 0, max = 1, step = 0.01)),
               conditionalPanel(condition = "input.noise_mode == 'manual'",
                                numericInput("noise_manual", "Noise value", value = 50, min = 0, step = 1)),
               numericInput("noise_sd", "SD for random values", value = 30, min = 0, step = 1)
@@ -625,7 +636,7 @@ raw_df <- reactive({
           Xm <- impute_lod_random(
             X0,
             noise_mode     = input$noise_mode %||% "quantile",
-            noise_quantile = input$noise_quantile %||% 0.02,
+            noise_quantile = input$noise_quantile %||% 0.25,
             noise_manual   = input$noise_manual %||% 50,
             sd_val         = input$noise_sd %||% 30,
             seed           = 1234
@@ -761,6 +772,7 @@ raw_df <- reactive({
     if (!procReady()) return(NULL)
     tagList(
       plotlyOutput("volcano_plot", height = "520px"),
+      div(style = "height:8px;"),
       plotlyOutput("feature_plot", height = "260px")
     )
   })
@@ -856,6 +868,7 @@ raw_df <- reactive({
       plot_ly(
         data = dd,
         x = ~FC, y = ~`Adj.p-value.log`,
+        colors = "Set1", 
         color = ~Groups,
         type = "scatter", mode = "markers",
         text = hover_txt, hoverinfo = "text",
@@ -907,13 +920,6 @@ raw_df <- reactive({
     validate(need(feat %in% colnames(df_used), "Clicked feature not found in matrix."))
 
     row <- rv$volcano %>% filter(Groups == comp, Feature == feat) %>% slice(1)
-    subtitle <- ""
-    if (nrow(row) == 1) {
-      subtitle <- sprintf(
-        "Groups %s | mean_num=%.3g mean_den=%.3g | FC=%.3f",
-        row$Groups, row$mean_num, row$mean_den, row$FC
-      )
-    }
 
     yy <- as.numeric(df_used[[feat]])
     xx <- as.character(df_used$Label)
@@ -921,27 +927,29 @@ raw_df <- reactive({
     if (input$present_as == "Boxplot") {
       plot_ly(
         x = xx, y = yy,
+        colors = "Dark2",
         type = "box",
         color = xx,
         boxpoints = FALSE,
         marker = list(opacity = 0.8)
       ) %>%
         layout(
-          title = list(text = paste0(feat, "<br><span style='font-size:12px;'>", subtitle, "</span>")),
+          title = list(text = paste0(feat, "<br><span style='font-size:12px;'>")),
           xaxis = list(title = "Group"),
-          yaxis = list(title = "Intensity (RAW scale; same matrix used for stats)")
+          yaxis = list(title = "Intensity")
         )
     } else {
       plot_ly(
         x = xx, y = yy,
+        colors = "Dark2",
         type = "scatter", mode = "markers",
         color = xx,
         marker = list(size = 10, opacity = 0.85, line = list(color = "black", width = 1))
       ) %>%
         layout(
-          title = list(text = paste0(feat, "<br><span style='font-size:12px;'>", subtitle, "</span>")),
+          title = list(text = paste0(feat, "<br><span style='font-size:12px;'>")),
           xaxis = list(title = "Group"),
-          yaxis = list(title = "Intensity (RAW scale; same matrix used for stats)")
+          yaxis = list(title = "Intensity")
         )
     }
   })
