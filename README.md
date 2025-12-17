@@ -2,8 +2,7 @@
 
 ### Description :bookmark_tabs:
 The [Shiny App](https://shiny.posit.co/) for making an enhanced interactive volcano plot for metabolomics studies.
-
-to add ...
+For now, the App is available to directly read the output peak table from [mzmine](https://mzio.io/mzmine-news/), join it with the annotation table from [SIRIUS](https://bio.informatik.uni-jena.de/software/sirius/), perform imputation, and statistical tests. After preprocessing, the App generates several outputs: interactive [Plotly](https://plotly.com/)-type volcano plot, the table reformatted for [MetaboAnalyst](https://www.metaboanalyst.ca/home.xhtml) input, and a statistical table with SIRIUS annotation.
 
 > [!IMPORTANT]
 >The App's script was compiled using [R version 4.1.2](https://cran.r-project.org/bin/windows/base/old/4.1.2/) and its stable Web version is accessible through the link: <br>
