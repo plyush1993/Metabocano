@@ -802,7 +802,7 @@ raw_df <- reactive({
 
     mzr <- finite_range(dd$mz)
     rtr <- finite_range(dd$RT)
-    mr  <- finite_range(log10(dd$Mean + 1))
+    mr  <- finite_range(log10(dd$Mean))
 
     validate(need(!is.null(mzr) && !is.null(rtr) && !is.null(mr),
                   "No finite mz/RT/Mean values available for sliders."))
@@ -819,9 +819,9 @@ raw_df <- reactive({
                   value = c(rtr[1], rtr[2]),
                   step = 0.1),
       sliderInput("intensity_range", "Mean log10(Intensity):",
-                  min = floor(mr[1] * 10)/10,
-                  max = ceiling(mr[2] * 10)/10,
-                  value = c(mr[1], mr[2]),
+                  min = round(mr[1], 1),
+                  max = round(mr[2], 1),
+                  value = c(round(mr[1], 1), round(mr[2], 1)),
                   step = 0.1)
     )
   })
