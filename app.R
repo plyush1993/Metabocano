@@ -30,6 +30,7 @@ suppressPackageStartupMessages({
   library(MsCoreUtils)   # bpca imputation
   library(viridisLite)   # colors for Mean mode
   library(tibble)
+  library(pcaMethods)
 })
 
 # ----------------------------- Helpers -----------------------------------
