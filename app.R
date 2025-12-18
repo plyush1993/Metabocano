@@ -953,7 +953,7 @@ raw_df <- reactive({
         color = xx,
         boxpoints = FALSE,
         marker = list(opacity = 0.8)
-      ) %>%
+      ) %>% hide_legend() %>% 
         layout(
           title = list(text = paste0(feat, "<br><span style='font-size:12px;'>")),
           xaxis = list(title = "Group"),
@@ -965,8 +965,8 @@ raw_df <- reactive({
         colors = "Dark2",
         type = "scatter", mode = "markers",
         color = xx,
-        marker = list(size = 10, opacity = 0.85, line = list(color = "black", width = 1))
-      ) %>%
+        marker = list(size = 20, opacity = 0.85, symbol = "diamond", line = list(color = "black", width = 2))
+      ) %>% hide_legend() %>% 
         layout(
           title = list(text = paste0(feat, "<br><span style='font-size:12px;'>")),
           xaxis = list(title = "Group"),
