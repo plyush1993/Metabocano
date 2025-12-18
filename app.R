@@ -267,8 +267,8 @@ compute_stats_long <- function(df_used,
     mean_den_raw <- colMeans(Xden, na.rm = TRUE)
 
     # FC is ALWAYS mean(log2(x + 1.1)) difference (num - den)
-    mean_num_log2 <- colMeans(log2(as.matrix(Xnum) + pseudocount), na.rm = TRUE)
-    mean_den_log2 <- colMeans(log2(as.matrix(Xden) + pseudocount), na.rm = TRUE)
+    mean_num_log2 <- log2(colMeans(as.matrix(Xnum), na.rm = TRUE) + pseudocount)
+    mean_den_log2 <- log2(colMeans(as.matrix(Xden), na.rm = TRUE) + pseudocount)
     FC <- mean_num_log2 - mean_den_log2
 
     Mean <- 0.5 * (mean_num_raw + mean_den_raw)
@@ -422,7 +422,7 @@ div(
 
           tags$hr(),
           h3(class = "highlight", "MVI (imputation)"),
-          radioButtons("do_mvi", "Imputation:", c("No"="no", "Yes"="yes"), selected = "no", inline = TRUE),
+          radioButtons("do_mvi", "Imputation:", c("No"="no", "Yes"="yes"), selected = "yes", inline = TRUE),
           conditionalPanel(
             condition = "input.do_mvi == 'yes'",
             radioButtons("mvi_type", "Type:", c("LOD random"="lod", "BPCA"="bpca"), selected = "lod"),
@@ -661,7 +661,9 @@ raw_df <- reactive({
             seed           = 1234
           )
         } else {
-          Xm <- MsCoreUtils::impute_matrix(t(as.matrix(X0)), method = "bpca")
+          X0m <- as.matrix(X0)
+          X0m[X0m == 0] <- NA
+          Xm <- MsCoreUtils::impute_matrix(t(X0m), method = "bpca")
           Xm <- t(Xm)
         }
         df_used <- as.data.frame(cbind(Label = df_used$Label, as.data.frame(Xm, check.names = FALSE)),
