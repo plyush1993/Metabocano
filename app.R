@@ -66,6 +66,22 @@ clean_sample_names <- function(x) {
   x
 }
 
+stop_if_one_group <- function(labs) {
+  labs <- trimws(as.character(labs))
+  labs <- labs[nzchar(labs)]
+  u <- unique(labs)
+
+  if (length(u) < 2) {
+    shiny::showNotification(
+      paste0("Need at least 2 different groups in 'Label' to run statistics."),
+      type = "error",
+      duration = 8
+    )
+    return(TRUE)  
+  }
+  FALSE
+}
+
 read_onecol_csv <- function(path) {
   v <- suppressWarnings(vroom::vroom(path, col_names = FALSE, delim = ","))
   as.character(v[[1]])
@@ -290,8 +306,10 @@ tags$head(tags$style(HTML("
   body { padding-bottom: 45px; }
 "))),
 
-div(class = "app-footer",
-    HTML("Created by: Dr. Ivan Plyushchenko ; Github: plyush1993")
+div(
+  class = "app-footer",
+  HTML('Created by: Dr. Ivan Plyushchenko &nbsp;|&nbsp;
+       <a href="https://github.com/plyush1993/Metabocano" target="_blank">GitHub repository</a>')
 ),
   
   div(
@@ -613,7 +631,8 @@ raw_df <- reactive({
   # ---- Process button
   observeEvent(input$run_proc, {
     req(built(), labels_vec())
-
+    labs_pre <- labels_vec()
+    if (stop_if_one_group(labs_pre)) return(NULL)
     withProgress(message = "Processing...", value = 0, {
       incProgress(0.15, detail = "Building matrix")
       X <- built()$mat
