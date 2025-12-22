@@ -8,11 +8,6 @@
 # Volcano Explorer (2 pages):
 #   1) Load & Process
 #   2) Volcano explorer
-#
-# FC policy:
-#   FC is ALWAYS: mean(log2(x + 1.1))_num - mean(log2(x + 1.1))_den
-# Tests policy:
-#   Statistical tests ALWAYS run on RAW values (never log).
 # -------------------------------------------------------------------------
 
 suppressPackageStartupMessages({
@@ -267,7 +262,7 @@ compute_stats_long <- function(df_used,
     mean_num_raw <- colMeans(Xnum, na.rm = TRUE)
     mean_den_raw <- colMeans(Xden, na.rm = TRUE)
 
-    # FC is ALWAYS mean(log2(x + 1.1)) difference (num - den)
+    # FC 
     mean_num_log2 <- log2(colMeans(as.matrix(Xnum), na.rm = TRUE) + pseudocount)
     mean_den_log2 <- log2(colMeans(as.matrix(Xden), na.rm = TRUE) + pseudocount)
     FC <- mean_num_log2 - mean_den_log2
@@ -777,7 +772,7 @@ raw_df <- reactive({
       if (!is.null(rtr)) updateSliderInput(session, "rt_range", value = c(rtr[1], rtr[2]))
       if (!is.null(mr))  updateSliderInput(session, "intensity_range", value = c(round(mr[1], 1), round(mr[2], 1)))
     
-      updateSliderInput(session, "fdr_cutoff", value = 1.30103) 
+      updateSliderInput(session, "fdr_cutoff", value = 1.30103)
       updateSliderInput(session, "fc_thr", value = 1)
     })
   
@@ -1003,7 +998,7 @@ raw_df <- reactive({
       plot_ly(
         data = dd,
         x = ~FC, y = ~`Adj.p-value.log`,
-        color = ~log2(Mean + 1.1),
+        color = ~log10(Mean + 1.1),
         symbol = ~Groups,
         colors = viridis(12),
         type = "scatter", mode = "markers",
