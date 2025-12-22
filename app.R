@@ -304,7 +304,7 @@ tags$head(tags$style(HTML("
 
 div(
   class = "app-footer",
-  HTML('Created by: Dr. Ivan Plyushchenko &nbsp;|&nbsp;
+  HTML('Created by: Ivan Plyushchenko &nbsp;|&nbsp;
        <a href="https://github.com/plyush1993/Metabocano" target="_blank">GitHub repository</a>')
 ),
   
