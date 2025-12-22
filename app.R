@@ -753,6 +753,34 @@ raw_df <- reactive({
 
   # ---------------- Volcano tab UI ----------------
 
+      observeEvent(input$reset_filters, {
+      req(procReady())
+    
+      # switches
+      updateMaterialSwitch(session, "sig_only", value = FALSE)
+      updateMaterialSwitch(session, "use_fdr_filter", value = FALSE)
+      updateMaterialSwitch(session, "use_fc_filter",  value = FALSE)
+    
+      # pickers / radios
+      updatePickerInput(session, "sel_feat", selected = character(0))
+      updateRadioButtons(session, "color_by", selected = "Groups")
+      updateRadioButtons(session, "present_as", selected = "Boxplot")
+      updateRadioButtons(session, "fc_dir", selected = "both")
+    
+      # sliders
+      dd <- rv$volcano
+      mzr <- finite_range(dd$mz)
+      rtr <- finite_range(dd$RT)
+      mr  <- finite_range(log10(dd$Mean + 1.1))
+    
+      if (!is.null(mzr)) updateSliderInput(session, "mz_range", value = c(mzr[1], mzr[2]))
+      if (!is.null(rtr)) updateSliderInput(session, "rt_range", value = c(rtr[1], rtr[2]))
+      if (!is.null(mr))  updateSliderInput(session, "intensity_range", value = c(round(mr[1], 1), round(mr[2], 1)))
+    
+      updateSliderInput(session, "fdr_cutoff", value = 1.30103) 
+      updateSliderInput(session, "fc_thr", value = 1)
+    })
+  
   output$volcano_sidebar <- renderUI({
     if (!procReady()) {
       return(div(class="highlight",
@@ -760,16 +788,19 @@ raw_df <- reactive({
     }
 
     tagList(
-      materialSwitch("sig_only", "Significant only", value = FALSE, status = "success"),
-
-      pickerInput(
+      actionButton("reset_filters", "Reset filters", class = "btn btn-warning"),
+      #tags$hr(),  
+      br(),
+      br(),
+      materialSwitch("sig_only", "Significant only", value = FALSE, status = "info"),
+        pickerInput(
         inputId = "sel_feat",
         label   = "Select/deselect features (optional):",
         choices = sort(unique(rv$volcano$Feature)),
         options = list(`actions-box` = TRUE, `live-search` = TRUE),
         multiple = TRUE
       ),
-
+      br(),
       radioButtons(
         "color_by",
         "Color points by:",
@@ -806,56 +837,100 @@ raw_df <- reactive({
     mzr <- finite_range(dd$mz)
     rtr <- finite_range(dd$RT)
     mr  <- finite_range(log10(dd$Mean))
+    fcmax <- max(abs(dd$FC), na.rm = TRUE)
+    yMax <- max(dd$`Adj.p-value.log`, na.rm = TRUE)
 
     validate(need(!is.null(mzr) && !is.null(rtr) && !is.null(mr),
                   "No finite mz/RT/Mean values available for sliders."))
 
     tagList(
       sliderInput("mz_range", "m/z:",
-                  min = floor(mzr[1]),
-                  max = ceiling(mzr[2]),
-                  value = c(mzr[1], mzr[2]),
-                  step = 1),
+                  min = round(min(dd$mz, na.rm = TRUE), 3),
+                  max = round(max(dd$mz, na.rm = TRUE), 3),
+                  value = round(range(dd$mz, na.rm = TRUE), 3),
+                  step = 0.1),
       sliderInput("rt_range", "RT:",
-                  min = floor(rtr[1] * 10)/10,
-                  max = ceiling(rtr[2] * 10)/10,
-                  value = c(rtr[1], rtr[2]),
+                  min = round(min(dd$RT, na.rm = TRUE), 1),
+                  max = round(max(dd$RT, na.rm = TRUE), 1),
+                  value = round(range(dd$RT, na.rm = TRUE),1),
                   step = 0.1),
       sliderInput("intensity_range", "Mean log10(Intensity):",
-                  min = round(mr[1], 1),
-                  max = round(mr[2], 1),
-                  value = c(round(mr[1], 1), round(mr[2], 1)),
-                  step = 0.1)
-    )
+                  min = round(log10(min(dd$Mean+1.1, na.rm = TRUE)),1),
+                  max = round(log10(max(dd$Mean+1.1, na.rm = TRUE)),1),
+                  value = round(log10(range(dd$Mean+1.1, na.rm = TRUE)),1),
+                  step = 0.1),
+          tags$hr(),
+       materialSwitch("use_fdr_filter", "Filter by Adj.p-value", value = FALSE, status = "success"),
+    conditionalPanel(
+      condition = "input.use_fdr_filter == true",
+      sliderInput("fdr_cutoff", "-log10(Adj.p-value):",
+                  min = 0, max = yMax, value = 1.30103, step = 0.01),
+      uiOutput("fdr_equiv_text")
+    ),
+
+    materialSwitch("use_fc_filter", "Filter by Fold-Change", value = FALSE, status = "success"),
+    conditionalPanel(
+      condition = "input.use_fc_filter == true",
+      sliderInput("fc_thr", "FC threshold (|log2FC| ≥):",
+                  min = 0, max = round(fcmax, 1), value = 1, step = 0.1),
+      radioButtons(
+        "fc_dir",
+        "Direction:",
+        choices = c("Both sides" = "both", "Up only" = "up", "Down only" = "down"),
+        selected = "both",
+        inline = TRUE
+      )
+    ))
   })
 
   # ---- Filtered volcano data
   filtered_volcano <- reactive({
-    req(procReady())
-    req(input$mz_range, input$rt_range, input$intensity_range)
-    validate(
-      need(length(input$mz_range) == 2, "m/z slider not ready"),
-      need(length(input$rt_range) == 2, "RT slider not ready"),
-      need(length(input$intensity_range) == 2, "Intensity slider not ready")
-    )
-
+    req(procReady(), input$mz_range, input$rt_range, input$intensity_range)
+  
     dd <- rv$volcano
-
+  
+    # (optional) significant + feature selection first
     if (isTRUE(input$sig_only)) {
-      dd <- dd %>% filter(Significant)
+      dd <- dd %>% dplyr::filter(Significant)
     }
     if (!is.null(input$sel_feat) && length(input$sel_feat) > 0) {
-      dd <- dd %>% filter(Feature %in% input$sel_feat)
+      dd <- dd %>% dplyr::filter(Feature %in% input$sel_feat)
     }
-
-    dd %>%
-      filter(
+  
+    # IMPORTANT: ASSIGN the main filters back to dd
+    dd <- dd %>%
+      dplyr::filter(
         is.finite(mz), is.finite(RT), is.finite(Mean),
         mz >= input$mz_range[1], mz <= input$mz_range[2],
         RT >= input$rt_range[1], RT <= input$rt_range[2],
-        log10(Mean + 1) >= input$intensity_range[1],
-        log10(Mean + 1) <= input$intensity_range[2]
+        log10(Mean + 1.1) >= input$intensity_range[1],
+        log10(Mean + 1.1) <= input$intensity_range[2]
       )
+  
+    # FDR filter
+    if (isTRUE(input$use_fdr_filter)) {
+      thr <- input$fdr_cutoff %||% 1.30103  # default = -log10(0.05)
+      dd <- dd %>% dplyr::filter(is.finite(`Adj.p-value.log`), `Adj.p-value.log` >= thr)
+    }
+  
+    output$fdr_equiv_text <- renderUI({
+      req(input$fdr_cutoff)
+      tags$small(sprintf("Equivalent Adj.p-value ≤ %.3g", 10^(-input$fdr_cutoff)))
+    })
+    
+    # FC filter
+    if (isTRUE(input$use_fc_filter)) {
+      thr <- input$fc_thr
+      if (input$fc_dir == "both") {
+        dd <- dd %>% dplyr::filter(abs(FC) >= thr)
+      } else if (input$fc_dir == "up") {
+        dd <- dd %>% dplyr::filter(FC >= thr)
+      } else {
+        dd <- dd %>% dplyr::filter(FC <= -thr)
+      }
+    }
+  
+    dd
   })
 
   # ---- Volcano plot
@@ -878,13 +953,33 @@ raw_df <- reactive({
       "<br>ClassyFire: ", dd$`ClassyFire#class`
     )
 
-    ythr <- -log10(0.05)
-
-    shapes <- list(
-      list(type="line", x0=-1, x1=-1, xref="x", y0=0, y1=1, yref="paper", line=list(dash="dot")),
-      list(type="line", x0= 1, x1= 1, xref="x", y0=0, y1=1, yref="paper", line=list(dash="dot")),
+    fc_line <- if (isTRUE(input$use_fc_filter)) input$fc_thr else 1
+    ythr <- if (isTRUE(input$use_fdr_filter)) (input$fdr_cutoff %||% 1.30103) else 1.30103
+    
+    shapes <- list()
+    
+    # FC lines
+    if (isTRUE(input$use_fc_filter)) {
+      if (input$fc_dir %in% c("both", "down")) {
+        shapes <- c(shapes, list(list(type="line", x0=-fc_line, x1=-fc_line, xref="x",
+                                      y0=0, y1=1, yref="paper", line=list(dash="dot"))))
+      }
+      if (input$fc_dir %in% c("both", "up")) {
+        shapes <- c(shapes, list(list(type="line", x0= fc_line, x1= fc_line, xref="x",
+                                      y0=0, y1=1, yref="paper", line=list(dash="dot"))))
+      }
+    } else {
+      # default volcano lines at +/-1
+      shapes <- c(shapes, list(
+        list(type="line", x0=-1, x1=-1, xref="x", y0=0, y1=1, yref="paper", line=list(dash="dot")),
+        list(type="line", x0= 1, x1= 1, xref="x", y0=0, y1=1, yref="paper", line=list(dash="dot"))
+      ))
+    }
+    
+    # FDR/p line
+    shapes <- c(shapes, list(
       list(type="line", x0=0, x1=1, xref="paper", y0=ythr, y1=ythr, yref="y", line=list(dash="dot"))
-    )
+    ))
 
     if (input$color_by == "Groups") {
       plot_ly(
