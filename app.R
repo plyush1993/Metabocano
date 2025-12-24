@@ -308,6 +308,28 @@ tags$head(
             href = "https://raw.githubusercontent.com/plyush1993/Metabocano/main/sticker.png")
 ),
 
+tags$head(
+    tags$style(HTML("
+      /* Increase max-width to prevent wrapping and align text left */
+      .tooltip-inner {
+        max-width: none !important;
+        white-space: nowrap;
+        text-align: left !important;
+        font-size: 18px;
+      }
+    "))
+  ),
+
+tags$head(tags$style(HTML("
+  /* make disabled download links truly inactive */
+  a.shiny-download-link.disabled, 
+  .shiny-download-link.disabled {
+    pointer-events: none !important;
+    opacity: 0.5 !important;
+    cursor: not-allowed !important;
+  }
+"))),
+
 div(
   class = "app-footer",
   HTML('Created by: Ivan Plyushchenko &nbsp;|&nbsp;
@@ -455,8 +477,15 @@ div(
           actionButton("run_proc", "Run preprocessing", class = "btn btn-success"),
           tags$br(), tags$br(),
           downloadButton("dl_volcano", "Download volcano table", class = "btn-info"),
+          actionButton("btn1", "?"),
+          bsTooltip("btn1", 
+          title = "<b>Download table with all calculated statistical values.</b>", "right", trigger = "click", options = list(container = "body")),
+
           tags$br(),tags$br(),
-          downloadButton("dl_matrix", "Download processed table", class = "btn-info")
+          downloadButton("dl_matrix", "Download processed table", class = "btn-info"),
+          actionButton("btn2", "?"),
+          bsTooltip("btn2", 
+          title = "<b>Download peak table after all processing steps and <em>Label</em> column.</b><br>Suitable as input in MetaboAnalyst (www.metaboanalyst.ca/).", "right", trigger = "click", options = list(container = "body"))
         ),
 
         mainPanel(
@@ -483,6 +512,39 @@ div(
 # ----------------------------- Server -------------------------------------
 
 server <- function(input, output, session) {
+
+  # Disable buttons on first load
+session$onFlushed(function() {
+  shinyjs::disable("run_proc")
+  shinyjs::disable("dl_volcano")
+  shinyjs::disable("dl_matrix")
+}, once = TRUE)
+
+# Enable "Run preprocessing" only after a dataset is uploaded
+observe({
+  shinyjs::toggleState("run_proc", condition = !is.null(input$file_data))
+})
+
+# Enable download buttons only after preprocessing (rv$volcano exists)
+observe({
+  if (procReady()) {
+    shinyjs::enable("dl_volcano")
+    shinyjs::enable("dl_matrix")
+  } else {
+    shinyjs::disable("dl_volcano")
+    shinyjs::disable("dl_matrix")
+  }
+})
+
+# If user uploads a NEW dataset -> invalidate old results (forces re-run)
+observeEvent(input$file_data, {
+  rv$raw <- NULL
+  rv$mat <- NULL
+  rv$fmap <- NULL
+  rv$labels <- NULL
+  rv$df_used <- NULL
+  rv$volcano <- NULL
+}, ignoreInit = TRUE)
 
   rv <- reactiveValues(
     raw = NULL,
