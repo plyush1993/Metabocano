@@ -26,6 +26,7 @@ suppressPackageStartupMessages({
   library(viridisLite)   # colors for Mean mode
   library(tibble)
   library(pcaMethods)
+  library(shinyBS)
 })
 
 # ----------------------------- Helpers -----------------------------------
