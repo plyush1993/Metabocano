@@ -302,6 +302,12 @@ tags$head(tags$style(HTML("
   body { padding-bottom: 45px; }
 "))),
 
+tags$head(
+  tags$title("Metabocano — Volcano Explorer"),
+  tags$link(rel = "icon", type = "image/png",
+            href = "https://raw.githubusercontent.com/plyush1993/Metabocano/main/sticker.png")
+),
+
 div(
   class = "app-footer",
   HTML('Created by: Ivan Plyushchenko &nbsp;|&nbsp;
