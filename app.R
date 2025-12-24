@@ -22,10 +22,8 @@ suppressPackageStartupMessages({
   library(tidyr)
   library(stringr)
   library(plotly)
-  library(MsCoreUtils)   # bpca imputation
-  library(viridisLite)   # colors for Mean mode
+  library(viridisLite)   
   library(tibble)
-  library(pcaMethods)
   library(shinyBS)
 })
 
@@ -450,11 +448,11 @@ div(
           radioButtons("do_mvi", "Imputation:", c("No"="no", "Yes"="yes"), selected = "yes", inline = TRUE),
           conditionalPanel(
             condition = "input.do_mvi == 'yes'",
-            radioButtons("mvi_type", "Type:", c("LOD random"="lod", "BPCA"="bpca"), selected = "lod"),
+            #radioButtons("mvi_type", "Type:", c("LOD random"="lod", "BPCA"="bpca"), selected = "lod"),
             conditionalPanel(
-              condition = "input.mvi_type == 'lod'",
+              condition = "input.do_mvi == 'yes'",
               radioButtons("noise_mode", "Noise:",
-                           c("Quantile of non-zero values"="quantile", "Manual value"="manual"),
+                           c("Quantile in the range 1:min"="quantile", "Manual value"="manual"),
                            selected = "quantile"),
               conditionalPanel(condition = "input.noise_mode == 'quantile'",
                                numericInput("noise_quantile", "Quantile (0-1)", value = 0.25, min = 0, max = 1, step = 0.01)),
@@ -715,8 +713,7 @@ raw_df <- reactive({
 
       incProgress(0.25, detail = "Imputation (if enabled)")
       if (identical(input$do_mvi, "yes")) {
-        X0 <- df_used[, -1, drop = FALSE]
-        if (identical(input$mvi_type, "lod")) {
+          X0 <- df_used[, -1, drop = FALSE]
           Xm <- impute_lod_random(
             X0,
             noise_mode     = input$noise_mode %||% "quantile",
@@ -725,12 +722,6 @@ raw_df <- reactive({
             sd_val         = input$noise_sd %||% 30,
             seed           = 1234
           )
-        } else {
-          X0m <- as.matrix(X0)
-          X0m[X0m == 0] <- NA
-          Xm <- MsCoreUtils::impute_matrix(t(X0m), method = "bpca")
-          Xm <- t(Xm)
-        }
         df_used <- as.data.frame(cbind(Label = df_used$Label, as.data.frame(Xm, check.names = FALSE)),
                                  check.names = FALSE, stringsAsFactors = FALSE)
         df_used$Label <- as.factor(df_used$Label)
