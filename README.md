@@ -4,9 +4,22 @@
 The [Shiny App](https://shiny.posit.co/) for making an enhanced interactive volcano plot for metabolomics studies.
 For now, the App is available to directly read the output peak table from [mzmine](https://mzio.io/mzmine-news/), join it with the annotation table from [SIRIUS](https://bio.informatik.uni-jena.de/software/sirius/), perform imputation, and statistical tests. After preprocessing, the App generates several outputs: interactive [Plotly](https://plotly.com/)-type volcano plot, the table reformatted for [MetaboAnalyst](https://www.metaboanalyst.ca/home.xhtml) input, and a statistical table with SIRIUS annotation.
 
+### Launch the App :rocket:
+The stable deployed version:<br>
+[**`https://plyush1993.shinyapps.io/Metabocano/`**](https://plyush1993.shinyapps.io/Metabocano) <br><br>
+Run locally:
+```r
+cat("Checking required packages (auto-installing if missing)\n")
+if (!requireNamespace("pacman", quietly = TRUE)) install.packages("pacman")
+pacman::p_load("shiny", "DT", "shinythemes", "shinyWidgets", "shinyjs", "vroom", "dplyr", "data.table", "tidyr", "stringr", "plotly", "viridisLite", "tibble", "shinyBS")
+
+source("https://raw.githubusercontent.com/plyush1993/Metabocano/refs/heads/main/app.R")
+shiny::shinyApp(ui, server)
+```
+<br>
+
 > [!IMPORTANT]
->The [App's script](https://github.com/plyush1993/Metabocano/blob/main/app.R) was compiled using [R version 4.1.2](https://cran.r-project.org/bin/windows/base/old/4.1.2/) and its stable Web version is accessible through the link: <br>
-[**`https://plyush1993.shinyapps.io/Metabocano/`**](https://plyush1993.shinyapps.io/Metabocano)
+>The [App's script](https://github.com/plyush1993/Metabocano/blob/main/app.R) was compiled using [R version 4.1.2](https://cran.r-project.org/bin/windows/base/old/4.1.2/) 
 <br>
 
 ### Contact :mailbox_with_mail:
