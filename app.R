@@ -223,7 +223,8 @@ compute_stats_long <- function(df_used,
                                adj  = c("BH","holm","hochberg","hommel","bonferroni","BY","fdr","none"),
                                paired = FALSE,
                                eqvar  = FALSE,
-                               pseudocount = 1.1) {
+                               pseudocount = 1.1,
+                               log2_test = FALSE) {
   test <- match.arg(test)
   adj  <- match.arg(adj)
 
@@ -236,32 +237,49 @@ compute_stats_long <- function(df_used,
   lev <- levels(gr)
   validate(need(length(lev) >= 2, "Need at least 2 Label groups to run statistics."))
 
-  comb <- t(combn(lev, 2)) # rows: (A,B) in level order
+  comb <- t(combn(lev, 2))
   out_list <- vector("list", nrow(comb))
 
   for (i in seq_len(nrow(comb))) {
-    gden <- comb[i, 1]  # denominator
-    gnum <- comb[i, 2]  # numerator
+    gden <- comb[i, 1]
+    gnum <- comb[i, 2]
     comp <- paste0(gnum, " / ", gden)
 
     sub <- df_used[df_used$Label %in% c(gden, gnum), c("Label", feats), drop = FALSE]
     sub$Label <- factor(as.character(sub$Label), levels = c(gden, gnum))
 
-    # p-values on RAW scale (never log)
-    if (test == "Student") {
-      p <- vapply(feats, function(f) safe_ttest_p(sub[[f]], sub$Label, paired = paired, var.equal = eqvar), numeric(1))
+    # choose scale for hypothesis tests
+    if (isTRUE(log2_test)) {
+      sub_test <- sub
+      sub_test[feats] <- lapply(sub_test[feats], function(z) log2(as.numeric(z) + pseudocount))
     } else {
-      p <- vapply(feats, function(f) safe_wilcox_p(sub[[f]], sub$Label, paired = paired), numeric(1))
+      sub_test <- sub
     }
+
+    # p-values (raw or log2 scale, depending on toggle)
+    if (test == "Student") {
+      p <- vapply(
+        feats,
+        function(f) safe_ttest_p(sub_test[[f]], sub_test$Label, paired = paired, var.equal = eqvar),
+        numeric(1)
+      )
+    } else {
+      p <- vapply(
+        feats,
+        function(f) safe_wilcox_p(sub_test[[f]], sub_test$Label, paired = paired),
+        numeric(1)
+      )
+    }
+
     padj <- if (adj == "none") p else stats::p.adjust(p, method = adj)
 
-    # group means on RAW scale
+    # group means on RAW scale (keep as-is)
     Xnum <- sub[sub$Label == gnum, feats, drop = FALSE]
     Xden <- sub[sub$Label == gden, feats, drop = FALSE]
     mean_num_raw <- colMeans(Xnum, na.rm = TRUE)
     mean_den_raw <- colMeans(Xden, na.rm = TRUE)
 
-    # FC 
+    # FC (keep as-is)
     mean_num_log2 <- log2(colMeans(as.matrix(Xnum), na.rm = TRUE) + pseudocount)
     mean_den_log2 <- log2(colMeans(as.matrix(Xden), na.rm = TRUE) + pseudocount)
     FC <- mean_num_log2 - mean_den_log2
@@ -277,8 +295,10 @@ compute_stats_long <- function(df_used,
       Mean = as.numeric(Mean),
       mean_num = as.numeric(mean_num_raw),
       mean_den = as.numeric(mean_den_raw),
-      FC = as.numeric(FC)
+      FC = as.numeric(FC),
+      TestScale = if (isTRUE(log2_test)) "log2" else "raw"
     )
+
     dd$`Adj.p-value.log` <- -log10(pmax(dd$`Adj.p-value`, .Machine$double.xmin))
     dd$Significant <- (dd$`Adj.p-value` <= 0.05) & (abs(dd$FC) >= 1)
 
@@ -471,7 +491,12 @@ div(
             condition = "input.test_type == 'Student'",
             checkboxInput("eqvar", "Equal variances (Student t-test)", FALSE)
           ),
-
+          materialSwitch(
+          "log2_test",
+          "Log Transformation",
+          value = FALSE,
+          status = "success"
+          ),
           tags$hr(),
           actionButton("run_proc", "Run preprocessing", class = "btn btn-success"),
           tags$br(), tags$br(),
@@ -729,12 +754,13 @@ raw_df <- reactive({
 
       incProgress(0.30, detail = "Running...")
       volc <- compute_stats_long(
-        df_used,
-        test = input$test_type %||% "Student",
-        adj  = input$p_adjust %||% "BH",
-        paired = isTRUE(input$paired),
-        eqvar  = isTRUE(input$eqvar),
-        pseudocount = 1.1
+      df_used,
+      test = input$test_type %||% "Student",
+      adj  = input$p_adjust %||% "BH",
+      paired = isTRUE(input$paired),
+      eqvar  = isTRUE(input$eqvar),
+      pseudocount = 1.1,
+      log2_test = isTRUE(input$log2_test)
       )
 
       incProgress(0.05, detail = "Joining mz/rt/id")
@@ -1000,6 +1026,7 @@ raw_df <- reactive({
       "Groups: ", dd$Groups,
       "<br>FC: ", dd$FC,
       "<br>FDR: ", format(dd$`Adj.p-value`, digits = 3, scientific = TRUE),
+      "<br>Test scale: ", dd$TestScale,
       "<br>Feature: ", dd$Feature,
       "<br>ID: ", dd$id,
       "<br>m/z: ", dd$mz,
