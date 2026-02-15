@@ -693,7 +693,7 @@ server <- function(input, output, session) {
     rid_col <- input$row_id_col
     
     if (rid_col == "<Auto-generate>") {
-      df$FeatureID_Auto <- paste0("ID_", seq_len(nrow(df)))
+      df$FeatureID_Auto <- as.numeric(seq_len(nrow(df)))
       rid_col <- "FeatureID_Auto"
     }
     
