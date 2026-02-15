@@ -1,8 +1,7 @@
-#Sys.setlocale("LC_ALL", "English_United States.1252")
-#Sys.setenv(LANG = "en_US.UTF-8")
-#Sys.setlocale("LC_ALL", "C.UTF-8")   # Use a universally available UTF-8 locale
-#options(encoding = "UTF-8")
-#rsconnect::deployApp()
+# Sys.setlocale("LC_ALL", "English_United States.1252")
+# Sys.setenv(LANG = "en_US.UTF-8")
+# options(encoding = "UTF-8")
+# rsconnect::deployApp()
 
 # app.R --------------------------------------------------------------------
 # Volcano Explorer (2 pages):
@@ -33,12 +32,56 @@ suppressPackageStartupMessages({
   if (is.null(x) || length(x) == 0 || (length(x) == 1 && is.na(x))) y else x
 }
 
+read_msdial_robust <- function(path) {
+  max_cols <- NA
+  try({
+    n_fields <- utils::count.fields(path, sep = ",")
+    max_cols <- max(n_fields, na.rm = TRUE)
+  }, silent = TRUE)
+  
+  if (!is.na(max_cols)) {
+    col_names <- paste0("V", seq_len(max_cols))
+    df <- utils::read.csv(path, header = FALSE, col.names = col_names, 
+                          stringsAsFactors = FALSE, colClasses = "character", na.strings = "")
+  } else {
+    df <- utils::read.csv(path, header = FALSE, stringsAsFactors = FALSE, 
+                          colClasses = "character", fill = TRUE)
+  }
+  
+  hdr_i <- NA
+  for (i in 1:min(50, nrow(df))) {
+    row_txt <- tolower(as.character(unlist(df[i, ])))
+    row_txt <- gsub("[^a-z0-9]", "", row_txt)
+    if ("averagemz" %in% row_txt || "alignmentid" %in% row_txt) {
+      hdr_i <- i
+      break
+    }
+  }
+  
+  if (!is.na(hdr_i)) {
+    new_names <- trimws(as.character(unlist(df[hdr_i, , drop = TRUE])))
+    mask_bad <- is.na(new_names) | new_names == "" | new_names == "NA"
+    if (any(mask_bad)) {
+      new_names[mask_bad] <- paste0("Unknown_", seq_len(sum(mask_bad)))
+    }
+    new_names <- make.unique(new_names, sep = "_")
+    names(df) <- new_names
+    
+    if (hdr_i < nrow(df)) {
+      df <- df[(hdr_i + 1):nrow(df), , drop = FALSE]
+    } else {
+      df <- df[0, , drop = FALSE]
+    }
+  }
+  df
+}
+
 clean_mzmine_export <- function(df) {
   df <- as.data.frame(df, check.names = FALSE, stringsAsFactors = FALSE)
   if (ncol(df) > 0) {
     last <- df[[ncol(df)]]
     if (all(is.na(last)) || all(trimws(as.character(last)) == "")) {
-      if (grepl("^Unnamed", names(df)[ncol(df)])) {
+      if (grepl("^Unnamed", names(df)[ncol(df)]) || names(df)[ncol(df)] == "") {
         df <- df[, -ncol(df), drop = FALSE]
       }
     }
@@ -56,7 +99,7 @@ multi_sample_idx <- function(cols, kws) {
 
 clean_sample_names <- function(x) {
   x <- gsub(" Peak area$", "", x, ignore.case = TRUE)
-  x <- gsub("\\.(mzML|mzXML|raw)$", "", x, ignore.case = TRUE)
+  x <- gsub("\\.(mzML|mzXML|raw|cdf)$", "", x, ignore.case = TRUE)
   x <- trimws(x)
   x
 }
@@ -88,22 +131,21 @@ finite_range <- function(x) {
   c(min(x), max(x))
 }
 
-# NEW: helper to guess column names by common candidates (case-insensitive)
 guess_col <- function(cols, candidates) {
   if (!length(cols)) return(NULL)
   cols_l <- tolower(cols)
-
-  # exact match first (in order of candidates)
-  for (cand in candidates) {
-    j <- which(cols_l == tolower(cand))
+  cols_norm <- gsub("[^a-z0-9]", "", cols_l)
+  cand_norm <- gsub("[^a-z0-9]", "", tolower(candidates))
+  
+  for (cand in cand_norm) {
+    j <- which(cols_norm == cand)
     if (length(j)) return(cols[j[1]])
   }
-  # then "contains" match
-  for (cand in candidates) {
-    j <- which(grepl(tolower(cand), cols_l, fixed = TRUE))
+  for (cand in cand_norm) {
+    j <- which(grepl(cand, cols_norm, fixed = TRUE))
     if (length(j)) return(cols[j[1]])
   }
-  cols[1]
+  NULL 
 }
 
 safe_ttest_p <- function(x, g, paired = FALSE, var.equal = FALSE) {
@@ -133,10 +175,6 @@ safe_wilcox_p <- function(x, g, paired = FALSE) {
   if (inherits(out, "try-error") || !is.finite(out)) 1 else as.numeric(out)
 }
 
-# Parse mzMine-like feature table:
-# - features are rows
-# - samples are columns matching keywords
-# - returns sample x feature matrix + feature map (id, mz, rt, Feature)
 parse_feature_table_to_matrix <- function(raw_df,
                                          row_id_col,
                                          mz_col,
@@ -159,6 +197,7 @@ parse_feature_table_to_matrix <- function(raw_df,
   sample_cols <- cols[sidx]
 
   # samples x features
+  # Using data.table::transpose exactly as original
   mat <- as.data.frame(data.table::transpose(raw_df[, sample_cols, drop = FALSE]),
                        check.names = FALSE, stringsAsFactors = FALSE)
   rownames(mat) <- clean_sample_names(sample_cols)
@@ -167,6 +206,10 @@ parse_feature_table_to_matrix <- function(raw_df,
   id <- as.character(raw_df[[row_id_col]])
   mz <- suppressWarnings(as.numeric(raw_df[[mz_col]]))
   rt <- suppressWarnings(as.numeric(raw_df[[rt_col]]))
+  
+  # safety for NA
+  mz[is.na(mz)] <- 0
+  rt[is.na(rt)] <- 0
 
   feat_raw <- paste0(mz, "@", rt)
   Feature <- make.unique(feat_raw, sep = "_")
@@ -185,7 +228,6 @@ parse_feature_table_to_matrix <- function(raw_df,
   list(mat = mat, fmap = fmap, raw = raw_df)
 }
 
-# Imputation (MVI)
 impute_lod_random <- function(X,
                               noise_mode = c("quantile", "manual"),
                               noise_quantile = 0.25,
@@ -196,7 +238,7 @@ impute_lod_random <- function(X,
   X <- as.matrix(X)
   X[X == 0] <- NA
 
-  nz <- 1:min(X, na.rm = T)
+  nz <- 1:min(X, na.rm = T) 
   if (!length(nz)) return(X * 0)
 
   if (noise_mode == "quantile") {
@@ -217,7 +259,6 @@ impute_lod_random <- function(X,
   X
 }
 
-# Stats + FC into long volcano table
 compute_stats_long <- function(df_used,
                                test = c("Student", "Wilcoxon"),
                                adj  = c("BH","holm","hochberg","hommel","bonferroni","BY","fdr","none"),
@@ -237,7 +278,7 @@ compute_stats_long <- function(df_used,
   lev <- levels(gr)
   validate(need(length(lev) >= 2, "Need at least 2 Label groups to run statistics."))
 
-  comb <- t(combn(lev, 2))
+  comb <- t(utils::combn(lev, 2))
   out_list <- vector("list", nrow(comb))
 
   for (i in seq_len(nrow(comb))) {
@@ -379,7 +420,7 @@ div(
     ',
     "Enhanced Interactive Volcano Plot for Metabolomics Studies"
   )
-), #c("#48D1CC", "#66CDAA", "#00CDCD")
+), 
   
  theme = shinytheme("flatly"), 
   setBackgroundColor(color = c("#FFFFFF", "#FFFFFF", "#67CFAC61"), gradient = "linear", direction = "bottom"),
@@ -411,11 +452,10 @@ div(
           h3(class = "highlight", "Upload"),
           fileInput("file_data", "Upload feature table (.csv)", accept = ".csv"),
 
-          # NEW: software tool selector (default = mzMine behavior)
           selectInput(
             "software_tool",
             "Software tool:",
-            choices = c("mzMine" = "mzmine", "xcms" = "xcms", "MS-DIAL" = "msdial"),
+            choices = c("mzMine" = "mzmine", "xcms" = "xcms", "MS-DIAL" = "msdial", "Default" = "default"),
             selected = "mzmine"
           ),
 
@@ -426,7 +466,7 @@ div(
           selectizeInput(
             "sample_keywords",
             "Sample column keywords (pick/add multiple):",
-            choices  = c(".mzML", ".mzXML", ".raw", " Peak area"),
+            choices  = c(".mzML", ".mzXML", ".raw", " Peak area", "Area"),
             selected = c(".mzML", ".mzXML"),
             multiple = TRUE,
             options  = list(create = TRUE, createOnBlur = TRUE,
@@ -455,7 +495,7 @@ div(
           checkboxInput("show_labels_table", "Show labels table", TRUE),
           tags$hr(),
 
-          h3(class = "highlight", "Annotation (optional)"),
+          h3(class = "highlight", "Annotation (for mzMine)"),
           materialSwitch("use_sirius", "Join SIRIUS CANOPUS summary", value = FALSE, status = "success"),
           conditionalPanel(
             condition = "input.use_sirius",
@@ -468,7 +508,6 @@ div(
           radioButtons("do_mvi", "Imputation:", c("No"="no", "Yes"="yes"), selected = "yes", inline = TRUE),
           conditionalPanel(
             condition = "input.do_mvi == 'yes'",
-            #radioButtons("mvi_type", "Type:", c("LOD random"="lod", "BPCA"="bpca"), selected = "lod"),
             conditionalPanel(
               condition = "input.do_mvi == 'yes'",
               radioButtons("noise_mode", "Noise:",
@@ -537,45 +576,41 @@ div(
 
 server <- function(input, output, session) {
 
-  # Disable buttons on first load
-session$onFlushed(function() {
-  shinyjs::disable("run_proc")
-  shinyjs::disable("dl_volcano")
-  shinyjs::disable("dl_matrix")
-}, once = TRUE)
-
-# Enable "Run preprocessing" only after a dataset is uploaded
-observe({
-  shinyjs::toggleState("run_proc", condition = !is.null(input$file_data))
-})
-
-# Enable download buttons only after preprocessing (rv$volcano exists)
-observe({
-  if (procReady()) {
-    shinyjs::enable("dl_volcano")
-    shinyjs::enable("dl_matrix")
-  } else {
+  session$onFlushed(function() {
+    shinyjs::disable("run_proc")
     shinyjs::disable("dl_volcano")
     shinyjs::disable("dl_matrix")
-  }
-})
+  }, once = TRUE)
 
-# If user uploads a NEW dataset -> invalidate old results (forces re-run)
-observeEvent(input$file_data, {
-  rv$raw <- NULL
-  rv$mat <- NULL
-  rv$fmap <- NULL
-  rv$labels <- NULL
-  rv$df_used <- NULL
-  rv$volcano <- NULL
-}, ignoreInit = TRUE)
+  observe({
+    shinyjs::toggleState("run_proc", condition = !is.null(input$file_data))
+  })
+
+  observe({
+    if (procReady()) {
+      shinyjs::enable("dl_volcano")
+      shinyjs::enable("dl_matrix")
+    } else {
+      shinyjs::disable("dl_volcano")
+      shinyjs::disable("dl_matrix")
+    }
+  })
+
+  observeEvent(input$file_data, {
+    rv$raw <- NULL
+    rv$mat <- NULL
+    rv$fmap <- NULL
+    rv$labels <- NULL
+    rv$df_used <- NULL
+    rv$volcano <- NULL
+  }, ignoreInit = TRUE)
 
   rv <- reactiveValues(
     raw = NULL,
     mat = NULL,
     fmap = NULL,
     labels = NULL,
-    df_used = NULL,   # matrix used for stats + plotting (raw or imputed)
+    df_used = NULL,
     volcano = NULL
   )
 
@@ -583,46 +618,60 @@ observeEvent(input$file_data, {
     !is.null(rv$volcano) && nrow(rv$volcano) > 0
   })
 
-  # ---- Load raw data
-raw_df <- reactive({
-  req(input$file_data)
-  ext <- tools::file_ext(input$file_data$name)
-  validate(need(tolower(ext) == "csv", "Please upload a .csv file"))
-  clean_mzmine_export(vroom::vroom(input$file_data$datapath, delim = ","))
-}) %>% bindCache(input$file_data$name)
+  # ---- Load raw data (Robust Switch) ----
+  raw_df <- reactive({
+    req(input$file_data)
+    ext <- tools::file_ext(input$file_data$name)
+    validate(need(tolower(ext) == "csv", "Please upload a .csv file"))
+    
+    tool <- input$software_tool %||% "mzmine"
+    
+    if (tool == "msdial") {
+      # Use custom robust reader for MS-DIAL
+      df <- read_msdial_robust(input$file_data$datapath)
+      clean_mzmine_export(df) # cleanup empty trailing cols
+    } else {
+      # Use fast vroom reader for standard CSVs (xcms/mzmine/default)
+      clean_mzmine_export(vroom::vroom(input$file_data$datapath, delim = ","))
+    }
+  }) %>% bindCache(input$file_data$name, input$software_tool)
 
-  # column pickers for raw (NOW depends on software_tool for default selections)
+  # ---- Column Pickers (Smart Defaults) ----
   output$col_pickers <- renderUI({
     req(raw_df())
     cols <- names(raw_df())
-
     tool <- input$software_tool %||% "mzmine"
-
-    # candidates per tool (defaults only; user can override)
+    
     rid_cand <- switch(tool,
-      xcms   = c("feature", "featureid", "feature_id", "id", "row id", "rowID"),
-      msdial = c("alignment id", "alignmentid", "peak id", "peakid", "id", "row id"),
-      c("row id", "rowID", "id")
+                       xcms   = c("feature_id", "feature", "id", "row id"),
+                       msdial = c("alignment id", "alignmentid", "spot id"),
+                       default = c("row id", "id", "feature_id"),
+                       c("row id", "id", "feature_id")
     )
     mz_cand <- switch(tool,
-      xcms   = c("mzmed", "mz", "m/z", "mzmin", "mzmax"),
-      msdial = c("average mz", "average m/z", "mz", "m/z"),
-      c("row m/z", "row mz", "m/z", "mz")
+                      xcms   = c("mzmed", "mz", "m/z", "mzmin", "mzmax"),
+                      msdial = c("average mz", "averagemz", "mz"),
+                      default = c("mz", "m/z", "mass", "average mz"),
+                      c("row m/z", "row mz", "mz")
     )
     rt_cand <- switch(tool,
-      xcms   = c("rtmed", "rt", "retention time", "rtmin", "rtmax"),
-      msdial = c("average rt(min)", "average rt (min)", "rt (min)", "rt", "retention time"),
-      c("row retention time", "retention time", "rt")
+                      xcms   = c("rtmed", "rt", "rtmin"),
+                      msdial = c("average rt(min)", "average rt", "averagertmin", "rt"),
+                      default = c("rt", "retention time", "time"),
+                      c("row retention time", "row rt", "rt")
     )
-
-    default_rid <- guess_col(cols, rid_cand)
-    default_mz  <- guess_col(cols, mz_cand)
-    default_rt  <- guess_col(cols, rt_cand)
-
+    
+    def_rid <- guess_col(cols, rid_cand)
+    def_mz  <- guess_col(cols, mz_cand)
+    def_rt  <- guess_col(cols, rt_cand)
+    
+    choices_rid <- c("<Auto-generate>", cols)
+    sel_rid <- if (is.null(def_rid)) "<Auto-generate>" else def_rid
+    
     tagList(
-      selectInput("row_id_col", "Row ID column:", choices = cols, selected = default_rid %||% cols[1]),
-      selectInput("mz_col",     "m/z column:",   choices = cols, selected = default_mz  %||% cols[1]),
-      selectInput("rt_col",     "rt column:",    choices = cols, selected = default_rt  %||% cols[1])
+      selectInput("row_id_col", "Row ID column:", choices = choices_rid, selected = sel_rid),
+      selectInput("mz_col",     "m/z column:",   choices = cols, selected = def_mz  %||% cols[1]),
+      selectInput("rt_col",     "rt column:",    choices = cols, selected = def_rt  %||% cols[1])
     )
   })
 
@@ -636,15 +685,27 @@ raw_df <- reactive({
     datatable(head(raw_df(), 20), options = list(scrollX = TRUE, pageLength = 8))
   })
 
-  # ---- Build matrix + fmap
+  # ---- Build matrix + fmap ----
   built <- reactive({
-    req(raw_df(), input$row_id_col, input$mz_col, input$rt_col, input$sample_keywords)
+    req(raw_df(), input$row_id_col, input$mz_col, input$rt_col)
+    
+    df <- raw_df()
+    rid_col <- input$row_id_col
+    
+    if (rid_col == "<Auto-generate>") {
+      df$FeatureID_Auto <- paste0("ID_", seq_len(nrow(df)))
+      rid_col <- "FeatureID_Auto"
+    }
+    
+    kws <- input$sample_keywords
+    if (is.null(kws) || length(kws) == 0) kws <- c(".") 
+
     parse_feature_table_to_matrix(
-      raw_df(),
-      row_id_col = input$row_id_col,
+      df, 
+      row_id_col = rid_col,
       mz_col     = input$mz_col,
       rt_col     = input$rt_col,
-      sample_keywords = input$sample_keywords
+      sample_keywords = kws
     )
   })
 
@@ -653,7 +714,7 @@ raw_df <- reactive({
     rownames(built()$mat)
   })
 
-  # ---- Labels
+  # ---- Labels ----
   labels_vec <- reactive({
     req(sample_names())
 
@@ -694,7 +755,7 @@ raw_df <- reactive({
     )
   })
 
-  # ---- SIRIUS pickers
+  # ---- SIRIUS pickers ----
   sirius_df <- reactive({
     req(input$use_sirius)
     req(input$file_sirius)
@@ -716,7 +777,7 @@ raw_df <- reactive({
     )
   })
 
-  # ---- Process button
+  # ---- Process button ----
   observeEvent(input$run_proc, {
     req(built(), labels_vec())
     labs_pre <- labels_vec()
@@ -870,7 +931,6 @@ raw_df <- reactive({
 
     tagList(
       actionButton("reset_filters", "Reset filters", class = "btn btn-warning"),
-      #tags$hr(),  
       br(),
       br(),
       materialSwitch("sig_only", "Significant only", value = FALSE, status = "info"),
@@ -970,7 +1030,6 @@ raw_df <- reactive({
   
     dd <- rv$volcano
   
-    # (optional) significant + feature selection first
     if (isTRUE(input$sig_only)) {
       dd <- dd %>% dplyr::filter(Significant)
     }
@@ -978,7 +1037,6 @@ raw_df <- reactive({
       dd <- dd %>% dplyr::filter(Feature %in% input$sel_feat)
     }
   
-    # IMPORTANT: ASSIGN the main filters back to dd
     dd <- dd %>%
       dplyr::filter(
         is.finite(mz), is.finite(RT), is.finite(Mean),
@@ -988,9 +1046,8 @@ raw_df <- reactive({
         log10(Mean + 1.1) <= input$intensity_range[2]
       )
   
-    # FDR filter
     if (isTRUE(input$use_fdr_filter)) {
-      thr <- input$fdr_cutoff %||% 1.30103  # default = -log10(0.05)
+      thr <- input$fdr_cutoff %||% 1.30103 
       dd <- dd %>% dplyr::filter(is.finite(`Adj.p-value.log`), `Adj.p-value.log` >= thr)
     }
   
@@ -999,7 +1056,6 @@ raw_df <- reactive({
       tags$small(sprintf("Equivalent Adj.p-value ≤ %.3g", 10^(-input$fdr_cutoff)))
     })
     
-    # FC filter
     if (isTRUE(input$use_fc_filter)) {
       thr <- input$fc_thr
       if (input$fc_dir == "both") {
@@ -1040,7 +1096,6 @@ raw_df <- reactive({
     
     shapes <- list()
     
-    # FC lines
     if (isTRUE(input$use_fc_filter)) {
       if (input$fc_dir %in% c("both", "down")) {
         shapes <- c(shapes, list(list(type="line", x0=-fc_line, x1=-fc_line, xref="x",
@@ -1051,14 +1106,12 @@ raw_df <- reactive({
                                       y0=0, y1=1, yref="paper", line=list(dash="dot"))))
       }
     } else {
-      # default volcano lines at +/-1
       shapes <- c(shapes, list(
         list(type="line", x0=-1, x1=-1, xref="x", y0=0, y1=1, yref="paper", line=list(dash="dot")),
         list(type="line", x0= 1, x1= 1, xref="x", y0=0, y1=1, yref="paper", line=list(dash="dot"))
       ))
     }
     
-    # FDR/p line
     shapes <- c(shapes, list(
       list(type="line", x0=0, x1=1, xref="paper", y0=ythr, y1=ythr, yref="y", line=list(dash="dot"))
     ))
