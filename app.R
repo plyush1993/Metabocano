@@ -1183,7 +1183,7 @@ server <- function(input, output, session) {
 
   # ---- Feature plot on click
   output$feature_plot <- renderPlotly({
-    req(procReady(), rv$df_used)
+    req(procReady(), rv$df_used, rv$mat)
 
     click <- event_data("plotly_click", source = "volcano")
     if (is.null(click) || is.null(click$key)) return(NULL)
@@ -1197,7 +1197,8 @@ server <- function(input, output, session) {
     validate(need(feat %in% colnames(df_used), "Clicked feature not found in matrix."))
 
     row <- rv$volcano %>% filter(Groups == comp, Feature == feat) %>% slice(1)
-
+    s_names <- rownames(rv$mat)
+    
     yy <- as.numeric(df_used[[feat]])
     xx <- as.character(df_used$Label)
 
@@ -1218,9 +1219,16 @@ server <- function(input, output, session) {
     } else {
       plot_ly(
         x = xx, y = yy,
+        text = s_names,
         colors = "Dark2",
         type = "scatter", mode = "markers",
         color = xx,
+        hovertemplate = paste(
+          "<b>Sample:</b> %{text}<br>",
+          "<b>Group:</b> %{x}<br>",
+          "<b>Intensity:</b> %{y}",
+          "<extra></extra>" 
+        ),
         marker = list(size = 20, opacity = 0.85, symbol = "diamond", line = list(color = "black", width = 2))
       ) %>% hide_legend() %>% 
         layout(
