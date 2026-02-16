@@ -363,7 +363,7 @@ tags$head(tags$style(HTML("
 "))),
 
 tags$head(
-  tags$title("Metabocano — Volcano Explorer"),
+  tags$title("Metabocano"),
   tags$link(rel = "icon", type = "image/png",
             href = "https://raw.githubusercontent.com/plyush1993/Metabocano/main/sticker.png")
 ),
@@ -495,16 +495,41 @@ div(
           checkboxInput("show_labels_table", "Show labels table", TRUE),
           tags$hr(),
 
-          h3(class = "highlight", "Annotation (for mzMine)"),
-          materialSwitch("use_sirius", "Join SIRIUS CANOPUS summary", value = FALSE, status = "success"),
-          conditionalPanel(
-            condition = "input.use_sirius",
-            fileInput("file_sirius", "Upload canopus_formula_summary.csv", accept = ".csv"),
-            uiOutput("sirius_pickers")
-          ),
+          h3(class = "highlight", "Join with Annotation"),
+      div(
+        style = "display: flex; align-items: center; margin-bottom: 15px;",
+        
+        materialSwitch(
+          inputId = "use_sirius", 
+          label = "Join SIRIUS summary", 
+          value = FALSE, 
+          status = "success", 
+          width = "auto"
+        ),
+        
+        actionButton(
+          inputId = "btn5", 
+          label = "?", 
+          class = "", 
+          style = "font-weight: bold; margin-left: 10px; margin-top: -2px;"
+        )
+      ),
+      bsTooltip(
+        id = "btn5", 
+        title = "<b>Join SIRIUS csv output with processed table (by <em>Row ID</em> column)</b>", 
+        placement = "right", 
+        trigger = "click", 
+        options = list(container = "body")
+      ),
+
+      conditionalPanel(
+        condition = "input.use_sirius",
+        fileInput("file_sirius", "Upload SIRIUS .csv output", accept = ".csv"),
+        uiOutput("sirius_pickers")
+      ),
 
           tags$hr(),
-          h3(class = "highlight", "MVI (imputation)"),
+          h3(class = "highlight", "Imputation by Noise"),
           radioButtons("do_mvi", "Imputation:", c("No"="no", "Yes"="yes"), selected = "yes", inline = TRUE),
           conditionalPanel(
             condition = "input.do_mvi == 'yes'",
@@ -768,11 +793,11 @@ server <- function(input, output, session) {
     req(sirius_df())
     cols <- names(sirius_df())
     tagList(
-      selectInput("sirius_idcol", "SIRIUS mappingFeatureId column:",
+      selectInput("sirius_idcol", "SIRIUS Feature ID column:",
                   choices = cols, selected = if ("mappingFeatureId" %in% cols) "mappingFeatureId" else cols[1]),
-      selectInput("sirius_npcol", "NPC class column:",
+      selectInput("sirius_npcol", "NPC column:",
                   choices = cols, selected = if ("NPC#class" %in% cols) "NPC#class" else cols[1]),
-      selectInput("sirius_cfcol", "ClassyFire class column:",
+      selectInput("sirius_cfcol", "ClassyFire column:",
                   choices = cols, selected = if ("ClassyFire#class" %in% cols) "ClassyFire#class" else cols[1])
     )
   })
