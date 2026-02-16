@@ -2,7 +2,7 @@
 
 ### Description :bookmark_tabs:
 The [Shiny App](https://shiny.posit.co/) for making an enhanced interactive volcano plot for metabolomics studies.
-The App is available to directly read the output peak table from [mzmine](https://mzio.io/mzmine-news/), [xcms](https://www.bioconductor.org/packages/release/bioc/html/xcms.html), [MS-DIAL](https://systemsomicslab.github.io/compms/msdial/main.html), and Default (see [examples of input datasets](https://github.com/plyush1993/Metabocano/tree/main/toy_examples)) then join it with the annotation table from [SIRIUS](https://bio.informatik.uni-jena.de/software/sirius/), perform imputation, and statistical tests. After preprocessing, the App generates several outputs: interactive [Plotly](https://plotly.com/)-type volcano plot, the table reformatted for [MetaboAnalyst](https://www.metaboanalyst.ca/home.xhtml) input, and a statistical table with SIRIUS annotation.
+The App is available to directly read the output peak table from [mzMine](https://mzio.io/mzmine-news/), [xcms](https://www.bioconductor.org/packages/release/bioc/html/xcms.html), [MS-DIAL](https://systemsomicslab.github.io/compms/msdial/main.html), and Default (see [examples of input datasets](https://github.com/plyush1993/Metabocano/tree/main/toy_examples)) then join it with the annotation table from [SIRIUS](https://bio.informatik.uni-jena.de/software/sirius/), perform imputation, and statistical tests. After preprocessing, the App generates several outputs: interactive [Plotly](https://plotly.com/)-type volcano plot, the table reformatted for [MetaboAnalyst](https://www.metaboanalyst.ca/home.xhtml) input, and a statistical table with SIRIUS annotation.
 
 ### Launch the App :rocket:
 Shiny deployment:<br>
