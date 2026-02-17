@@ -668,9 +668,9 @@ server <- function(input, output, session) {
     tool <- input$software_tool %||% "mzmine"
     
     rid_cand <- switch(tool,
-                       xcms   = c("feature_id", "feature", "id", "row id"),
+                       xcms   = c("...1", "X...1", "feature_id", "feature", "id", "row id"),
                        msdial = c("alignment id", "alignmentid", "spot id"),
-                       default = c("row id", "id", "feature_id"),
+                       default = c("Feature", "row id", "id", "feature_id"),
                        c("row id", "id", "feature_id")
     )
     mz_cand <- switch(tool,
