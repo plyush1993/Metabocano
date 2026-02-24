@@ -26,6 +26,8 @@ suppressPackageStartupMessages({
   library(shinyBS)
 })
 
+options(shiny.maxRequestSize = 1024 * 1024^2)
+
 # ----------------------------- Helpers -----------------------------------
 
 `%||%` <- function(x, y) {
