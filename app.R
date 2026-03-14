@@ -267,7 +267,8 @@ compute_stats_long <- function(df_used,
                                paired = FALSE,
                                eqvar  = FALSE,
                                pseudocount = 1.1,
-                               log2_test = FALSE) {
+                               log2_test = FALSE,
+                               ref_group = NULL) {
   test <- match.arg(test)
   adj  <- match.arg(adj)
 
@@ -280,12 +281,20 @@ compute_stats_long <- function(df_used,
   lev <- levels(gr)
   validate(need(length(lev) >= 2, "Need at least 2 Label groups to run statistics."))
 
-  comb <- t(utils::combn(lev, 2))
+  if (!is.null(ref_group) && ref_group %in% lev) {
+    others <- setdiff(lev, ref_group)
+    # Each row: [Control, Treatment]
+    comb <- cbind(rep(ref_group, length(others)), others)
+  } else {
+    # Fallback to all pairs if no ref selected
+    comb <- t(utils::combn(lev, 2))
+  }
+
   out_list <- vector("list", nrow(comb))
 
   for (i in seq_len(nrow(comb))) {
-    gden <- comb[i, 1]
-    gnum <- comb[i, 2]
+    gnum <- comb[i, 1] # Reference (Denominator)
+    gden <- comb[i, 2] # Comparison (Numerator)
     comp <- paste0(gnum, " / ", gden)
 
     sub <- df_used[df_used$Label %in% c(gden, gnum), c("Label", feats), drop = FALSE]
@@ -550,6 +559,7 @@ div(
 
           tags$hr(),
           h3(class = "highlight", "Statistics"),
+          uiOutput("ref_group_picker"),
           selectInput("test_type", "Test:", c("Student", "Wilcoxon"), selected = "Student"),
           selectInput("p_adjust", "p-adjust:", c("BH","holm","hochberg","hommel","bonferroni","BY","fdr","none"), selected = "BH"),
           checkboxInput("paired", "Paired test", FALSE),
@@ -781,6 +791,12 @@ server <- function(input, output, session) {
       rownames = FALSE
     )
   })
+  
+  output$ref_group_picker <- renderUI({
+  req(labels_vec())
+  levs <- sort(unique(labels_vec()))
+  selectInput("ref_group", "Reference Group:", choices = levs)
+  })
 
   # ---- SIRIUS pickers ----
   sirius_df <- reactive({
@@ -848,7 +864,8 @@ server <- function(input, output, session) {
       paired = isTRUE(input$paired),
       eqvar  = isTRUE(input$eqvar),
       pseudocount = 1.1,
-      log2_test = isTRUE(input$log2_test)
+      log2_test = isTRUE(input$log2_test),
+      ref_group = input$ref_group
       )
 
       incProgress(0.05, detail = "Joining mz/rt/id")
