@@ -456,6 +456,37 @@ div(
     .small-note { font-size: 13px; opacity: 0.85; }
   "))),
 
+tags$head(tags$style(HTML("
+    /* Existing Footer and layout styles */
+    .app-footer { position: fixed; left:0; right:0; bottom:0; 
+                  text-align:center; font-size:12px; opacity:0.75;
+                  padding:8px; background: rgba(255,255,255,0.8);
+                  border-top: 1px solid #ddd; z-index: 9999; }
+    body { padding-bottom: 45px; }
+
+    /* --- NEW: Thicker Upload Progress Bar --- */
+    .progress.shiny-file-input-progress {
+      height: 20px !important;
+      margin-top: 10px !important;
+      border-radius: 5px !important;
+    }
+    
+    .progress.shiny-file-input-progress .progress-bar {
+      line-height: 20px !important;
+      font-size: 14px !important;
+      font-weight: bold !important;
+      background-color: #66CDAA !important; /* Matches your app's theme color */
+    }
+    /* ---------------------------------------- */
+
+    .tooltip-inner {
+      max-width: none !important;
+      white-space: nowrap;
+      text-align: left !important;
+      font-size: 18px;
+    }
+  "))),
+
   tabsetPanel(id = "tabs",
     tabPanel("1) Load & Process", value = "load",
       sidebarLayout(
