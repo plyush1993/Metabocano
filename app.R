@@ -1162,6 +1162,7 @@ server <- function(input, output, session) {
       "<br>ID: ", dd$id,
       "<br>m/z: ", dd$mz,
       "<br>RT: ", dd$RT,
+      "<br>Mean Intensity: ", format(dd$Mean, big.mark = ",", scientific = FALSE),
       "<br>NPC: ", dd$`NPC#class`,
       "<br>ClassyFire: ", dd$`ClassyFire#class`
     )
