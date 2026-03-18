@@ -11,16 +11,23 @@ The [`Shiny App`](https://shiny.posit.co/) for making an enhanced interactive vo
   - table with statistics and SIRIUS annotation
 
 ### Launch the App :rocket:
-Shiny deployment:<br>
+**Shiny deployment**<br>
 [**`https://plyush1993.shinyapps.io/Metabocano/`**](https://plyush1993.shinyapps.io/Metabocano) <br><br>
-Run locally:
+**Run locally**<br>
+Install:
 ```r
-cat("Checking required packages (auto-installing if missing)\n")
-if (!requireNamespace("pacman", quietly = TRUE)) install.packages("pacman")
-pacman::p_load("shiny", "DT", "shinythemes", "shinyWidgets", "shinyjs", "vroom", "dplyr", "data.table", "tidyr", "stringr", "plotly", "viridisLite", "tibble", "shinyBS")
-
-source("https://raw.githubusercontent.com/plyush1993/Metabocano/refs/heads/main/app.R")
-shiny::shinyApp(ui, server)
+if (!require("BiocManager", quietly = TRUE)) {
+    install.packages("BiocManager")
+}
+if (!require("remotes", quietly = TRUE)) {
+    install.packages("remotes")
+}
+remotes::install_github("plyush1993/metabocano", INSTALL_opts = "--no-multiarch")
+```
+Run:
+```r
+library(metabocano)
+run_metabocano()
 ```
 <br>
 
