@@ -24,6 +24,7 @@ suppressPackageStartupMessages({
   library(viridisLite)   
   library(tibble)
   library(shinyBS)
+  library(shinycssloaders)
 })
 
 options(shiny.maxRequestSize = 1024 * 1024^2)
@@ -1040,7 +1041,7 @@ server <- function(input, output, session) {
   output$volcano_main <- renderUI({
     if (!procReady()) return(NULL)
     tagList(
-      plotlyOutput("volcano_plot", height = "520px"),
+      withSpinner(plotlyOutput("volcano_plot", height = "520px"), type = 8, color = "#66CDAA"),
       div(style = "height:8px;"),
       plotlyOutput("feature_plot", height = "260px")
     )
