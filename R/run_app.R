@@ -1,6 +1,6 @@
 #' Run the Metabocano Application
 #'
-#'#' @importFrom green bold blue
+#' @importFrom green bold blue
 #' @export
 run_metabocano <- function(...) {
   cat("\n")
