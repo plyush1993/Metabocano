@@ -7,6 +7,6 @@
 run_metabocano()
 }
 \description{
-Run the Metabocano Application
-Online version: https://plyush1993.shinyapps.io/Metabocano/
+Run the Metabocano Application locally. Shiny deployment
+\href{https://plyush1993.shinyapps.io/Metabocano/}{here}.
 }
