@@ -26,8 +26,7 @@ remotes::install_github("plyush1993/metabocano", INSTALL_opts = "--no-multiarch"
 ```
 Run:
 ```r
-library(metabocano)
-run_metabocano()
+metabocano::run_metabocano()
 ```
 <br>
 
