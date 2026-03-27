@@ -15,7 +15,7 @@ xdata <- adjustRtime(...)
 xdata <- groupChromPeaks(...)
 xdata <- fillChromPeaks(...)
 
-fvals <- featureValues(xdata, method = "sum")
+fvals <- featureValues(xdata, value = "into")
 fdef <- featureDefinitions(mse)[, c("mzmed", "mzmin", "mzmax", "rtmed", "rtmin", "rtmax")]
 fvals <- cbind(Row.names = rownames(fdef), fdef, fvals)
 
