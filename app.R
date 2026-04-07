@@ -494,7 +494,7 @@ tags$head(tags$style(HTML("
         sidebarPanel(
           h3(class = "highlight", "Upload"),
           fileInput("file_data", "Upload feature table (.csv)", accept = ".csv"),
-
+          helpText(HTML("<i class='fa fa-info-circle'></i> Need data to test? Download example datasets from our <a href='https://github.com/plyush1993/Metabocano' target='_blank'>GitHub</a>.")),
           selectInput(
             "software_tool",
             "Software tool:",
