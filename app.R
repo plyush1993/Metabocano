@@ -504,7 +504,6 @@ tags$head(tags$style(HTML("
           tags$hr(),
           uiOutput("col_pickers"),
 
-          h4("Sample columns detection"),
           selectizeInput(
             "sample_keywords",
             "Sample column keywords (pick/add multiple):",
