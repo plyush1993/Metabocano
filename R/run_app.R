@@ -17,10 +17,13 @@ run_metabocano <- function(...) {
   flush.console()
 
   old_opts <- options(shiny.maxRequestSize = 2 * 1024^3)
+
     on.exit({
     options(old_opts)
     gc()
     }, add = TRUE)
   shiny::addResourcePath("www", system.file("www", package = "metabocano"))
-  shiny::shinyApp(ui = app_ui(), server = app_server, ...)
+
+  app <- shiny::shinyApp(ui = app_ui(), server = app_server)
+  shiny::runApp(app, ...)
 }
