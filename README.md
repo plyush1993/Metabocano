@@ -27,6 +27,11 @@ if (!require("remotes", quietly = TRUE)) {
 }
 remotes::install_github("plyush1993/metabocano", INSTALL_opts = "--no-multiarch")
 ```
+or
+```r
+if (!requireNamespace("pak", quietly = TRUE)) install.packages("pak")
+pak::pak("plyush1993/metabocano")
+```
 Run:
 ```r
 metabocano::run_metabocano()
