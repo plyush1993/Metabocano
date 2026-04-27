@@ -214,7 +214,7 @@ parse_feature_table_to_matrix <- function(raw_df,
   mz[is.na(mz)] <- 0
   rt[is.na(rt)] <- 0
 
-  feat_raw <- paste0(mz, "@", rt)
+  feat_raw <- paste0(round(mz, 4), "@", round(rt, 2))
   Feature <- make.unique(feat_raw, sep = "_")
   colnames(mat) <- Feature
 
@@ -1051,7 +1051,7 @@ server <- function(input, output, session) {
 
     mzr <- finite_range(dd$mz)
     rtr <- finite_range(dd$RT)
-    mr  <- finite_range(log10(dd$Mean))
+    mr  <- finite_range(log10(dd$Mean+ 1.1))
     fcmax <- max(abs(dd$FC), na.rm = TRUE)
     yMax <- max(dd$`Adj.p-value.log`, na.rm = TRUE)
 
@@ -1104,11 +1104,11 @@ server <- function(input, output, session) {
   
     dd <- rv$volcano
   
+    if (!is.null(input$sel_feat) && length(input$sel_feat) > 0) {
+      return(dd %>% dplyr::filter(Feature %in% input$sel_feat))
+    }
     if (isTRUE(input$sig_only)) {
       dd <- dd %>% dplyr::filter(Significant)
-    }
-    if (!is.null(input$sel_feat) && length(input$sel_feat) > 0) {
-      dd <- dd %>% dplyr::filter(Feature %in% input$sel_feat)
     }
   
     dd <- dd %>%
