@@ -183,7 +183,7 @@ parse_feature_table_to_matrix <- function(raw_df,
   mz[is.na(mz)] <- 0
   rt[is.na(rt)] <- 0
 
-  feat_raw <- paste0(mz, "@", rt)
+  feat_raw <- paste0(round(mz, 4), "@", round(rt, 2))
   Feature <- make.unique(feat_raw, sep = "_")
   colnames(mat) <- Feature
 

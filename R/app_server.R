@@ -423,7 +423,7 @@ app_server <- function(input, output, session) {
 
     mzr <- finite_range(dd$mz)
     rtr <- finite_range(dd$RT)
-    mr  <- finite_range(log10(dd$Mean))
+    mr  <- finite_range(log10(dd$Mean+ 1.1))
     fcmax <- max(abs(dd$FC), na.rm = TRUE)
     yMax <- max(dd$`Adj.p-value.log`, na.rm = TRUE)
 
@@ -476,11 +476,11 @@ app_server <- function(input, output, session) {
 
     dd <- rv$volcano
 
+    if (!is.null(input$sel_feat) && length(input$sel_feat) > 0) {
+      return(dd %>% dplyr::filter(Feature %in% input$sel_feat))
+    }
     if (isTRUE(input$sig_only)) {
       dd <- dd %>% dplyr::filter(Significant)
-    }
-    if (!is.null(input$sel_feat) && length(input$sel_feat) > 0) {
-      dd <- dd %>% dplyr::filter(Feature %in% input$sel_feat)
     }
 
     dd <- dd %>%
