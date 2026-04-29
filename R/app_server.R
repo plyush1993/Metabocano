@@ -13,6 +13,7 @@
 #' @import stringr
 #' @import vroom
 #' @import plotly
+#' @import limma
 app_server <- function(input, output, session) {
 
   session$onFlushed(function() {
@@ -267,6 +268,7 @@ app_server <- function(input, output, session) {
       eqvar  = isTRUE(input$eqvar),
       pseudocount = 1.1,
       log2_test = isTRUE(input$log2_test),
+      scale_data = isTRUE(input$standard_scaling),
       ref_group = input$ref_group
       )
 

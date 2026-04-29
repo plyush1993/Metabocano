@@ -232,12 +232,13 @@ impute_lod_random <- function(X,
 }
 
 compute_stats_long <- function(df_used,
-                               test = c("Student", "Wilcoxon"),
+                               test = c("Student", "Wilcoxon", "limma"),
                                adj  = c("BH","holm","hochberg","hommel","bonferroni","BY","fdr","none"),
                                paired = FALSE,
                                eqvar  = FALSE,
                                pseudocount = 1.1,
                                log2_test = FALSE,
+                               scale_data = FALSE,
                                ref_group = NULL) {
   test <- match.arg(test)
   adj  <- match.arg(adj)
@@ -278,6 +279,16 @@ compute_stats_long <- function(df_used,
       sub_test <- sub
     }
 
+    if (isTRUE(scale_data)) {
+      sub_test[feats] <- lapply(sub_test[feats], function(z) {
+        vec <- as.numeric(z)
+        s <- stats::sd(vec, na.rm = TRUE)
+        # Prevent division by zero if variance is 0
+        if (is.na(s) || s == 0) return(rep(0, length(vec)))
+        as.numeric(scale(vec, center = TRUE, scale = TRUE))
+      })
+    }
+
     # p-values (raw or log2 scale, depending on toggle)
     if (test == "Student") {
       p <- vapply(
@@ -285,12 +296,26 @@ compute_stats_long <- function(df_used,
         function(f) safe_ttest_p(sub_test[[f]], sub_test$Label, paired = paired, var.equal = eqvar),
         numeric(1)
       )
-    } else {
+    } else if (test == "Wilcoxon") {
       p <- vapply(
         feats,
         function(f) safe_wilcox_p(sub_test[[f]], sub_test$Label, paired = paired),
         numeric(1)
       )
+    } else if (test == "limma") {
+      # limma requires transposed matrix: features in rows, samples in columns
+      emat <- t(as.matrix(sub_test[feats]))
+
+      # Create design matrix for the two groups
+      design <- stats::model.matrix(~ sub_test$Label)
+
+      # Run Moderated t-test pipeline
+      fit <- limma::lmFit(emat, design)
+      fit <- limma::eBayes(fit)
+
+      # Extract p-values for the comparison (second coefficient)
+      p <- fit$p.value[, 2]
+      names(p) <- feats # Ensure order matches
     }
 
     padj <- if (adj == "none") p else stats::p.adjust(p, method = adj)

@@ -13,6 +13,7 @@
 #' @import stringr
 #' @import vroom
 #' @import plotly
+#' @import limma
 app_ui <- function() {
 fluidPage(
   useShinyjs(),
@@ -202,8 +203,8 @@ tags$head(tags$style(HTML("
         actionButton(
           inputId = "btn5",
           label = "?",
-          class = "",
-          style = "font-weight: bold; margin-left: 10px; margin-top: -2px;"
+          class = "btn-xs",
+          style = "font-weight: bold; margin-left: 10px; margin-top: -20px;"
         )
       ),
       bsTooltip(
@@ -241,9 +242,12 @@ tags$head(tags$style(HTML("
           tags$hr(),
           h3(class = "highlight", "Statistics"),
           uiOutput("ref_group_picker"),
-          selectInput("test_type", "Test:", c("Student", "Wilcoxon"), selected = "Student"),
+          selectInput("test_type", "Test:", c("Student", "Wilcoxon", "limma (Moderated t-test)" = "limma"), selected = "Student"),
           selectInput("p_adjust", "p-adjust:", c("BH","holm","hochberg","hommel","bonferroni","BY","fdr","none"), selected = "BH"),
-          checkboxInput("paired", "Paired test", FALSE),
+          conditionalPanel(
+            condition = "input.test_type == 'Student' || input.test_type == 'Wilcoxon'",
+            checkboxInput("paired", "Paired test", FALSE)
+          ),
           conditionalPanel(
             condition = "input.test_type == 'Student'",
             checkboxInput("eqvar", "Equal variances (Student t-test)", FALSE)
@@ -253,6 +257,12 @@ tags$head(tags$style(HTML("
           "Log Transformation",
           value = FALSE,
           status = "success"
+          ),
+          materialSwitch(
+            "standard_scaling",
+            "Auto Scaling",
+            value = FALSE,
+            status = "success"
           ),
           tags$hr(),
           actionButton("run_proc", "Run preprocessing", class = "btn btn-success"),
