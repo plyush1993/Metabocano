@@ -25,6 +25,7 @@ suppressPackageStartupMessages({
   library(tibble)
   library(shinyBS)
   library(shinycssloaders)
+  library(limma)
 })
 
 options(shiny.maxRequestSize = 1024 * 1024^2)
@@ -263,12 +264,13 @@ impute_lod_random <- function(X,
 }
 
 compute_stats_long <- function(df_used,
-                               test = c("Student", "Wilcoxon"),
+                               test = c("Student", "Wilcoxon", "limma"),
                                adj  = c("BH","holm","hochberg","hommel","bonferroni","BY","fdr","none"),
                                paired = FALSE,
                                eqvar  = FALSE,
                                pseudocount = 1.1,
                                log2_test = FALSE,
+                               scale_data = FALSE,
                                ref_group = NULL) {
   test <- match.arg(test)
   adj  <- match.arg(adj)
@@ -309,6 +311,16 @@ compute_stats_long <- function(df_used,
       sub_test <- sub
     }
 
+    if (isTRUE(scale_data)) {
+      sub_test[feats] <- lapply(sub_test[feats], function(z) {
+        vec <- as.numeric(z)
+        s <- stats::sd(vec, na.rm = TRUE)
+        # Prevent division by zero if variance is 0
+        if (is.na(s) || s == 0) return(rep(0, length(vec))) 
+        as.numeric(scale(vec, center = TRUE, scale = TRUE))
+      })
+    }
+    
     # p-values (raw or log2 scale, depending on toggle)
     if (test == "Student") {
       p <- vapply(
@@ -316,12 +328,26 @@ compute_stats_long <- function(df_used,
         function(f) safe_ttest_p(sub_test[[f]], sub_test$Label, paired = paired, var.equal = eqvar),
         numeric(1)
       )
-    } else {
+    } else if (test == "Wilcoxon") {
       p <- vapply(
         feats,
         function(f) safe_wilcox_p(sub_test[[f]], sub_test$Label, paired = paired),
         numeric(1)
       )
+    } else if (test == "limma") {
+      # limma requires transposed matrix: features in rows, samples in columns
+      emat <- t(as.matrix(sub_test[feats]))
+      
+      # Create design matrix for the two groups
+      design <- stats::model.matrix(~ sub_test$Label)
+      
+      # Run Moderated t-test pipeline
+      fit <- limma::lmFit(emat, design)
+      fit <- limma::eBayes(fit)
+      
+      # Extract p-values for the comparison (second coefficient)
+      p <- fit$p.value[, 2]
+      names(p) <- feats # Ensure order matches
     }
 
     padj <- if (adj == "none") p else stats::p.adjust(p, method = adj)
@@ -551,8 +577,8 @@ tags$head(tags$style(HTML("
         actionButton(
           inputId = "btn5", 
           label = "?", 
-          class = "", 
-          style = "font-weight: bold; margin-left: 10px; margin-top: -2px;"
+          class = "btn-xs", 
+          style = "font-weight: bold; margin-left: 10px; margin-top: -20px;"
         )
       ),
       bsTooltip(
@@ -590,9 +616,12 @@ tags$head(tags$style(HTML("
           tags$hr(),
           h3(class = "highlight", "Statistics"),
           uiOutput("ref_group_picker"),
-          selectInput("test_type", "Test:", c("Student", "Wilcoxon"), selected = "Student"),
+          selectInput("test_type", "Test:", c("Student", "Wilcoxon", "limma (Moderated t-test)" = "limma"), selected = "Student"),
           selectInput("p_adjust", "p-adjust:", c("BH","holm","hochberg","hommel","bonferroni","BY","fdr","none"), selected = "BH"),
-          checkboxInput("paired", "Paired test", FALSE),
+          conditionalPanel(
+            condition = "input.test_type == 'Student' || input.test_type == 'Wilcoxon'",
+            checkboxInput("paired", "Paired test", FALSE)
+          ),
           conditionalPanel(
             condition = "input.test_type == 'Student'",
             checkboxInput("eqvar", "Equal variances (Student t-test)", FALSE)
@@ -602,6 +631,12 @@ tags$head(tags$style(HTML("
           "Log Transformation",
           value = FALSE,
           status = "success"
+          ),
+          materialSwitch(
+            "standard_scaling",
+            "Auto Scaling",
+            value = FALSE,
+            status = "success"
           ),
           tags$hr(),
           actionButton("run_proc", "Run preprocessing", class = "btn btn-success"),
@@ -895,6 +930,7 @@ server <- function(input, output, session) {
       eqvar  = isTRUE(input$eqvar),
       pseudocount = 1.1,
       log2_test = isTRUE(input$log2_test),
+      scale_data = isTRUE(input$standard_scaling),
       ref_group = input$ref_group
       )
 
