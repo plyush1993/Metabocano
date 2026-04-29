@@ -25,7 +25,10 @@ Imports:
     tibble,
     tidyr,
     viridisLite,
-    vroom
+    vroom,
+    limma
+Remotes: 
+    bioc::limma
 Depends: 
     R (>= 4.1.2)
 URL: https://github.com/plyush1993/metabocano, https://plyush1993.shinyapps.io/metabocano/
