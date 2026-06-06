@@ -29,7 +29,7 @@ tags$head(tags$style(HTML("
 tags$head(
   tags$title("Metabocano"),
   tags$link(rel = "icon", type = "image/png",
-            href = "www/sticker.png")
+            href = "https://raw.githubusercontent.com/plyush1993/Metabocano/main/sticker.png")
 ),
 
 tags$head(
@@ -70,7 +70,7 @@ div(
   ",
 
   tags$img(
-    src = 'www/sticker.png',
+    src = 'https://raw.githubusercontent.com/plyush1993/Metabocano/main/sticker.png',
     height = '150px',
     style = 'margin-right: 20px;'
   ),
@@ -168,25 +168,60 @@ tags$head(tags$style(HTML("
 
           tags$hr(),
           h3(class = "highlight", "Labels"),
-          radioButtons(
-            "label_source",
-            "Label source:",
-            choices = c("From sample names (token)" = "token",
-                        "From uploaded labels CSV (1 column, no header)" = "csv"),
-            selected = "token"
-          ),
-          conditionalPanel(
-            condition = "input.label_source == 'token'",
-            textInput("token_sep", "Token separator", value = "_"),
-            numericInput("token_index", "Token index (1-based)", value = 2, min = 1, step = 1),
-            checkboxInput("clean_sample_names", "Clean sample names (remove extension/Peak area)", TRUE)
-          ),
-          conditionalPanel(
-            condition = "input.label_source == 'csv'",
-            fileInput("file_labels", "Upload labels CSV", accept = ".csv")
-          ),
-          checkboxInput("show_labels_table", "Show labels table", TRUE),
-          tags$hr(),
+
+radioButtons(
+  "label_source",
+  "Label source:",
+  choices = c(
+    "From sample names (token)" = "token",
+    "From uploaded labels CSV (1 column, no header)" = "csv",
+    "Manual editable table" = "manual"
+  ),
+  selected = "token"
+),
+
+conditionalPanel(
+  condition = "input.label_source == 'token' || input.label_source == 'manual'",
+  textInput("token_sep", "Token separator", value = "_"),
+  numericInput("token_index", "Token index (1-based)", value = 2, min = 1, step = 1),
+  checkboxInput("clean_sample_names", "Clean sample names (remove extension/Peak area)", TRUE)
+),
+
+conditionalPanel(
+  condition = "input.label_source == 'csv'",
+  fileInput("file_labels", "Upload labels CSV", accept = ".csv")
+),
+
+conditionalPanel(
+  condition = "input.label_source == 'manual'",
+  div(
+    style = "display: inline-flex; align-items: center; gap: 6px; margin-bottom: 10px;",
+
+    actionButton(
+      "fill_manual_labels",
+      label = tags$span(
+        HTML("Fill editable table from<br>current token labels"),
+        style = "line-height: 1.1;"
+      ),
+      class = "btn-success",
+      style = "
+        font-size: 12px;
+        padding: 4px 8px;
+        line-height: 1.1;
+        width: 150px;
+        white-space: normal;
+      "
+    )
+  ),
+
+  div(
+    class = "small-note",
+    "Double-click cells in the Label column to edit group names. The Sample column is locked."
+  )
+),
+
+checkboxInput("show_labels_table", "Show labels table", TRUE),
+tags$hr(),
 
           h3(class = "highlight", "Join with Annotation"),
       div(
@@ -284,7 +319,10 @@ tags$head(tags$style(HTML("
           DTOutput("raw_preview"),
           tags$hr(),
           uiOutput("labels_header"),
-          conditionalPanel(condition = "input.show_labels_table", DTOutput("labels_table")),
+          conditionalPanel(
+  condition = "input.show_labels_table || input.label_source == 'manual'",
+  DTOutput("labels_table")
+),
           tags$hr(),
           uiOutput("proc_summary")
         )
@@ -298,6 +336,5 @@ tags$head(tags$style(HTML("
       )
     )
   )
-
 )
 }

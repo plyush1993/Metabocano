@@ -154,32 +154,146 @@ app_server <- function(input, output, session) {
     rownames(built()$mat)
   })
 
+  manual_labels <- reactiveVal(NULL)
+
+auto_label_table <- reactive({
+  req(sample_names())
+
+  make_label_table(
+    sample_names(),
+    labels_from_sample_names_or_raw(
+      sample_names(),
+      token_sep = input$token_sep %||% "_",
+      token_index = input$token_index %||% 2,
+      clean_names = isTRUE(input$clean_sample_names)
+    )
+  )
+})
+
+observeEvent(sample_names(), {
+  req(auto_label_table())
+  manual_labels(auto_label_table())
+}, ignoreInit = FALSE)
+
+observeEvent(input$fill_manual_labels, {
+  req(auto_label_table())
+
+  manual_labels(auto_label_table())
+
+  rv$labels <- NULL
+  rv$df_used <- NULL
+  rv$volcano <- NULL
+
+  showNotification(
+    "Editable label table was filled from current token labels.",
+    type = "message",
+    duration = 3
+  )
+}, ignoreInit = TRUE)
+
+observeEvent(input$labels_table_cell_edit, {
+  req(input$label_source == "manual")
+
+  info <- input$labels_table_cell_edit
+
+  tbl <- manual_labels()
+  req(tbl)
+
+  row_i <- as.integer(info$row)
+
+  if (!is.finite(row_i) || row_i < 1 || row_i > nrow(tbl)) {
+    showNotification("Edited row is outside label table.", type = "error", duration = 3)
+    return(NULL)
+  }
+
+  tbl$Label[row_i] <- trimws(as.character(info$value))
+
+  manual_labels(tbl)
+
+  rv$labels <- NULL
+  rv$df_used <- NULL
+  rv$volcano <- NULL
+
+  showNotification(
+    paste0("Label updated: ", tbl$Sample[row_i], " -> ", tbl$Label[row_i]),
+    type = "message",
+    duration = 2
+  )
+}, ignoreInit = TRUE)
+
   # ---- Labels ----
   labels_vec <- reactive({
-    req(sample_names())
+  req(sample_names())
 
-    if (input$label_source == "csv") {
-      req(input$file_labels)
-      v <- read_onecol_csv(input$file_labels$datapath)
-      v <- trimws(v)
-      validate(need(length(v) == length(sample_names()),
-                    sprintf("Labels count (%d) must match #samples (%d).",
-                            length(v), length(sample_names()))))
-      v
-    } else {
-      sn <- sample_names()
-      sn2 <- if (isTRUE(input$clean_sample_names)) clean_sample_names(sn) else sn
-      sep <- input$token_sep %||% "_"
-      idx <- as.integer(input$token_index %||% 2)
+  src <- input$label_source %||% "token"
 
-      parts <- strsplit(sn2, sep, fixed = TRUE)
-      ok <- vapply(parts, function(z) length(z) >= idx, logical(1))
-      validate(need(all(ok), sprintf("Token %d missing in some sample names. Adjust separator/index.", idx)))
-      labs <- vapply(parts, function(z) z[[idx]], character(1))
-      validate(need(all(nzchar(labs)), "Parsed empty labels — adjust separator/index."))
-      labs
-    }
-  })
+  if (identical(src, "csv")) {
+
+    req(input$file_labels)
+
+    v <- read_onecol_csv(input$file_labels$datapath)
+    v <- trimws(v)
+
+    validate(
+      need(
+        length(v) == length(sample_names()),
+        sprintf(
+          "Labels count (%d) must match #samples (%d).",
+          length(v), length(sample_names())
+        )
+      )
+    )
+
+    v
+
+  } else if (identical(src, "manual")) {
+
+    tbl <- manual_labels()
+    req(tbl)
+
+    validate(
+      need(
+        nrow(tbl) == length(sample_names()),
+        "Manual label table must match the number of samples."
+      ),
+      need(
+        identical(as.character(tbl$Sample), as.character(sample_names())),
+        "Manual label table does not match current sample names. Click 'Fill editable table from current token labels'."
+      ),
+      need(
+        !any(is.na(tbl$Label) | trimws(tbl$Label) == ""),
+        "All samples must have labels."
+      )
+    )
+
+    trimws(as.character(tbl$Label))
+
+  } else {
+
+    sn <- sample_names()
+    sn2 <- if (isTRUE(input$clean_sample_names)) clean_sample_names(sn) else sn
+    sep <- input$token_sep %||% "_"
+    idx <- as.integer(input$token_index %||% 2)
+
+    parts <- strsplit(sn2, sep, fixed = TRUE)
+    ok <- vapply(parts, function(z) length(z) >= idx, logical(1))
+
+    validate(
+      need(
+        all(ok),
+        sprintf("Token %d missing in some sample names. Adjust separator/index.", idx)
+      )
+    )
+
+    labs <- vapply(parts, function(z) z[[idx]], character(1))
+
+    validate(
+      need(all(nzchar(labs)), "Parsed empty labels — adjust separator/index.")
+    )
+
+    labs
+  }
+})
 
   output$labels_header <- renderUI({
     req(sample_names(), labels_vec())
@@ -187,13 +301,38 @@ app_server <- function(input, output, session) {
   })
 
   output$labels_table <- renderDT({
-    req(sample_names(), labels_vec())
-    datatable(
-      tibble(Sample = sample_names(), Label = labels_vec()),
-      options = list(pageLength = 8, scrollX = TRUE),
-      rownames = FALSE
-    )
-  })
+  req(sample_names())
+
+  src <- input$label_source %||% "token"
+
+  tbl <- if (identical(src, "manual")) {
+    manual_labels()
+  } else {
+    req(labels_vec())
+    make_label_table(sample_names(), labels_vec())
+  }
+
+  req(tbl)
+
+  datatable(
+    tbl,
+    editable = if (identical(src, "manual")) {
+      list(
+        target = "cell",
+        disable = list(columns = c(0)) # lock Sample column
+      )
+    } else {
+      FALSE
+    },
+    options = list(
+      pageLength = 8,
+      scrollX = TRUE,
+      ordering = FALSE,
+      searching = FALSE
+    ),
+    rownames = FALSE
+  )
+}, server = FALSE)
 
   output$ref_group_picker <- renderUI({
   req(labels_vec())

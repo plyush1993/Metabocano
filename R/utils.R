@@ -76,6 +76,35 @@ clean_sample_names <- function(x) {
   x
 }
 
+make_label_table <- function(sample_names, labels) {
+  tibble::tibble(
+    Sample = as.character(sample_names),
+    Label  = trimws(as.character(labels))
+  )
+}
+
+labels_from_sample_names_or_raw <- function(sample_names,
+                                            token_sep = "_",
+                                            token_index = 2,
+                                            clean_names = TRUE) {
+  sn <- if (isTRUE(clean_names)) clean_sample_names(sample_names) else sample_names
+  sep <- token_sep %||% "_"
+  idx <- as.integer(token_index %||% 2)
+
+  parts <- strsplit(sn, sep, fixed = TRUE)
+  ok <- vapply(parts, function(z) length(z) >= idx, logical(1))
+
+  labs <- vapply(seq_along(parts), function(i) {
+    if (ok[i] && nzchar(parts[[i]][[idx]])) {
+      parts[[i]][[idx]]
+    } else {
+      sn[i]
+    }
+  }, character(1))
+
+  labs
+}
+
 stop_if_one_group <- function(labs) {
   labs <- trimws(as.character(labs))
   labs <- labs[nzchar(labs)]
