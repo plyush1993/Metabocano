@@ -14,27 +14,34 @@
 #' @import vroom
 #' @import plotly
 #' @import limma
+#' @import RColorBrewer
+#' @import zip
 app_server <- function(input, output, session) {
 
   session$onFlushed(function() {
     shinyjs::disable("run_proc")
     shinyjs::disable("dl_volcano")
     shinyjs::disable("dl_matrix")
+    shinyjs::disable("dl_autoplotter_zip")
   }, once = TRUE)
 
   observe({
     shinyjs::toggleState("run_proc", condition = !is.null(input$file_data))
   })
 
-  observe({
-    if (procReady()) {
-      shinyjs::enable("dl_volcano")
-      shinyjs::enable("dl_matrix")
-    } else {
-      shinyjs::disable("dl_volcano")
-      shinyjs::disable("dl_matrix")
-    }
-  })
+ observe({
+  ids <- c(
+    "dl_volcano",
+    "dl_matrix",
+    "dl_autoplotter_zip"
+  )
+
+  if (procReady()) {
+    lapply(ids, shinyjs::enable)
+  } else {
+    lapply(ids, shinyjs::disable)
+  }
+})
 
   observeEvent(input$file_data, {
     rv$raw <- NULL
@@ -57,6 +64,11 @@ app_server <- function(input, output, session) {
   procReady <- reactive({
     !is.null(rv$volcano) && nrow(rv$volcano) > 0
   })
+
+  dataset_name <- reactive({
+  nm <- input$file_data$name %||% "dataset.csv"
+  tools::file_path_sans_ext(basename(nm))
+})
 
   # ---- Load raw data (Robust Switch) ----
   raw_df <- reactive({
@@ -804,22 +816,86 @@ observeEvent(input$labels_table_cell_edit, {
 
   # ---- Downloads
   output$dl_volcano <- downloadHandler(
-    filename = function() "volcano_table.csv",
-    content = function(file) {
-      req(rv$volcano)
-      data.table::fwrite(rv$volcano, file)
-    }
-  )
+  filename = function() {
+    paste0(dataset_name(), "_volcano_table.csv")
+  },
+  content = function(file) {
+    req(rv$volcano)
+
+    out <- as.data.frame(rv$volcano, check.names = FALSE, stringsAsFactors = FALSE)
+
+    data.table::fwrite(out, file, na = "")
+  }
+)
 
 output$dl_matrix <- downloadHandler(
-  filename = function() "processed_table.csv",
+  filename = function() {
+    paste0(dataset_name(), "_MetaboAnalyst_table.csv")
+  },
   content = function(file) {
     req(rv$df_used, rv$mat)
 
     out <- as.data.frame(rv$df_used, check.names = FALSE, stringsAsFactors = FALSE)
-    out <- cbind(Sample = rownames(rv$mat), out)
+    out <- cbind(
+      Sample = rownames(rv$mat),
+      out
+    )
 
-    data.table::fwrite(out, file)
+    data.table::fwrite(out, file, na = "")
   }
+)
+
+output$dl_autoplotter_zip <- downloadHandler(
+  filename = function() {
+    nm <- input$file_data$name %||% "dataset.csv"
+    paste0(tools::file_path_sans_ext(basename(nm)), "_AutoPlotter.zip")
+  },
+
+  content = function(file) {
+    req(rv$df_used, rv$mat, rv$fmap)
+
+    zip_dir <- tempfile("autoplotter_")
+    dir.create(zip_dir, recursive = TRUE, showWarnings = FALSE)
+    on.exit(unlink(zip_dir, recursive = TRUE, force = TRUE), add = TRUE)
+
+    data_file <- file.path(zip_dir, "data_table.csv")
+    meta_file <- file.path(zip_dir, "metadata.csv")
+    name_file <- file.path(zip_dir, "name_map.csv")
+
+    autoplotter_data <- make_autoplotter_data(
+      df_used = rv$df_used,
+      sample_names = rownames(rv$mat)
+    )
+
+    autoplotter_metadata <- make_autoplotter_metadata(
+      df_used = rv$df_used,
+      sample_names = rownames(rv$mat)
+    )
+
+    autoplotter_name_map <- make_autoplotter_name_map(
+      fmap = rv$fmap,
+      volcano = rv$volcano
+    )
+
+    data.table::fwrite(autoplotter_data, data_file, na = "")
+    data.table::fwrite(autoplotter_metadata, meta_file, na = "")
+    data.table::fwrite(autoplotter_name_map, name_file, na = "")
+
+    tmp_zip <- tempfile(fileext = ".zip")
+    on.exit(unlink(tmp_zip, force = TRUE), add = TRUE)
+
+    zip::zipr(
+      zipfile = tmp_zip,
+      files = c(data_file, meta_file, name_file),
+      root = zip_dir
+    )
+
+    ok <- file.copy(tmp_zip, file, overwrite = TRUE)
+    if (!ok) {
+      stop("Failed to copy AutoPlotter ZIP archive to download file.")
+    }
+  },
+
+  contentType = "application/zip"
 )
 }

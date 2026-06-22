@@ -14,6 +14,8 @@
 #' @import vroom
 #' @import plotly
 #' @import limma
+#' @import RColorBrewer
+#' @import zip
 app_ui <- function() {
 fluidPage(
   useShinyjs(),
@@ -357,16 +359,30 @@ tags$hr(),
           tags$hr(),
           actionButton("run_proc", "Run preprocessing", class = "btn btn-success"),
           tags$br(), tags$br(),
-          downloadButton("dl_volcano", "Download volcano table", class = "btn-info"),
+          downloadButton("dl_volcano", "Volcano table csv", class = "btn-info"),
           actionButton("btn1", "?"),
           bsTooltip("btn1",
           title = "<b>Download table with all calculated statistical values.</b>", "right", trigger = "click", options = list(container = "body")),
 
           tags$br(),tags$br(),
-          downloadButton("dl_matrix", "Download processed table", class = "btn-info"),
+          downloadButton("dl_matrix", "MetaboAnalyst-ready csv", class = "btn-info"),
           actionButton("btn2", "?"),
           bsTooltip("btn2",
-          title = "<b>Download peak table after all processing steps and <em>Label</em> column.</b><br>Suitable as input in MetaboAnalyst (www.metaboanalyst.ca/).", "right", trigger = "click", options = list(container = "body"))
+          title = "<b>Download peak table after MVI and with <em>Label</em> column.</b><br>Suitable as input in MetaboAnalyst (www.metaboanalyst.ca/).", "right", trigger = "click", options = list(container = "body")),
+
+        tags$br(),tags$br(),
+        downloadButton(
+          "dl_autoplotter_zip",
+          "AutoPlotter-ready ZIP",
+          class = "btn-info"
+        ),
+        actionButton("btn_auto", "?"),
+        bsTooltip(
+          "btn_auto",
+          title = "<b>Download AutoPlotter-ready ZIP archive.</b><br>Suitable as input as <em>Compounds in Columns</em> in Metabolite AutoPlotter (https://mpietzke.shinyapps.io/AutoPlotter/).",
+          placement = "right",
+          trigger = "click",
+          options = list(container = "body"))
         ),
 
         mainPanel(

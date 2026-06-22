@@ -383,3 +383,119 @@ compute_stats_long <- function(df_used,
 
   dplyr::bind_rows(out_list)
 }
+
+make_dark2_color_map <- function(conditions) {
+  conditions <- unique(as.character(conditions))
+  conditions <- conditions[!is.na(conditions) & nzchar(conditions)]
+
+  if (!length(conditions)) {
+    return(tibble::tibble(
+      Condition = character(),
+      Colour = character()
+    ))
+  }
+
+  base_cols <- RColorBrewer::brewer.pal(8, "Dark2")
+
+  cols <- if (length(conditions) <= 8) {
+    base_cols[seq_along(conditions)]
+  } else {
+    grDevices::colorRampPalette(base_cols)(length(conditions))
+  }
+
+  tibble::tibble(
+    Condition = conditions,
+    Colour = cols
+  )
+}
+
+
+make_autoplotter_data <- function(df_used, sample_names) {
+  df_used <- as.data.frame(df_used, check.names = FALSE, stringsAsFactors = FALSE)
+
+  feature_cols <- setdiff(names(df_used), "Label")
+
+  out <- df_used[, feature_cols, drop = FALSE]
+
+  out <- cbind(
+    Sample = as.character(sample_names),
+    out
+  )
+
+  as.data.frame(out, check.names = FALSE, stringsAsFactors = FALSE)
+}
+
+make_autoplotter_metadata <- function(df_used, sample_names) {
+  df_used <- as.data.frame(df_used, check.names = FALSE, stringsAsFactors = FALSE)
+
+  labs <- as.character(df_used$Label)
+
+  cmap <- make_dark2_color_map(labs)
+
+  meas_rep <- ave(
+    seq_along(labs),
+    labs,
+    FUN = seq_along
+  )
+
+  first_condition_row <- !duplicated(labs)
+
+  plot_order_full <- match(labs, cmap$Condition)
+  colour_full <- cmap$Colour[match(labs, cmap$Condition)]
+
+  tibble::tibble(
+    Filename = as.character(sample_names),
+    Condition = labs,
+    MeasRep = as.integer(meas_rep),
+    ExpRep = NA_character_,
+
+    # Filled only once per unique Condition
+    PlottingOrder = ifelse(first_condition_row, plot_order_full, NA_integer_),
+    Colour = ifelse(first_condition_row, colour_full, NA_character_),
+
+    Relative_Correction = NA_real_,
+    Absolute_Correction = NA_real_
+  )
+}
+
+make_autoplotter_name_map <- function(fmap, volcano = NULL) {
+  fmap <- as.data.frame(fmap, check.names = FALSE, stringsAsFactors = FALSE)
+
+  out <- tibble::tibble(
+    Name = as.character(fmap$Feature)
+  )
+
+  if (!is.null(volcano) && all(c("Feature", "NPC#class", "ClassyFire#class") %in% names(volcano))) {
+    ann <- volcano %>%
+      dplyr::select(
+        Feature,
+        `NPC#class`,
+        `ClassyFire#class`
+      ) %>%
+      dplyr::distinct(Feature, .keep_all = TRUE) %>%
+      dplyr::mutate(
+        `NPC#class` = dplyr::if_else(
+          is.na(`NPC#class`) | `NPC#class` == "Not provided",
+          "",
+          as.character(`NPC#class`)
+        ),
+        `ClassyFire#class` = dplyr::if_else(
+          is.na(`ClassyFire#class`) | `ClassyFire#class` == "Not provided",
+          "",
+          as.character(`ClassyFire#class`)
+        )
+      )
+
+    out <- out %>%
+      dplyr::left_join(ann, by = c("Name" = "Feature"))
+
+  } else {
+    out$`NPC#class` <- ""
+    out$`ClassyFire#class` <- ""
+  }
+
+  out$`NPC#class`[is.na(out$`NPC#class`)] <- ""
+  out$`ClassyFire#class`[is.na(out$`ClassyFire#class`)] <- ""
+
+  out
+}
