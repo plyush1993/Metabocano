@@ -28,6 +28,8 @@ suppressPackageStartupMessages({
   library(shinyBS)
   library(shinycssloaders)
   library(limma)
+  library(RColorBrewer)
+  library(zip)
 })
 
 options(shiny.maxRequestSize = 1024 * 1024^2)
@@ -418,6 +420,122 @@ compute_stats_long <- function(df_used,
   dplyr::bind_rows(out_list)
 }
 
+make_dark2_color_map <- function(conditions) {
+  conditions <- unique(as.character(conditions))
+  conditions <- conditions[!is.na(conditions) & nzchar(conditions)]
+
+  if (!length(conditions)) {
+    return(tibble::tibble(
+      Condition = character(),
+      Colour = character()
+    ))
+  }
+
+  base_cols <- RColorBrewer::brewer.pal(8, "Dark2")
+
+  cols <- if (length(conditions) <= 8) {
+    base_cols[seq_along(conditions)]
+  } else {
+    grDevices::colorRampPalette(base_cols)(length(conditions))
+  }
+
+  tibble::tibble(
+    Condition = conditions,
+    Colour = cols
+  )
+}
+
+
+make_autoplotter_data <- function(df_used, sample_names) {
+  df_used <- as.data.frame(df_used, check.names = FALSE, stringsAsFactors = FALSE)
+
+  feature_cols <- setdiff(names(df_used), "Label")
+
+  out <- df_used[, feature_cols, drop = FALSE]
+
+  out <- cbind(
+    Sample = as.character(sample_names),
+    out
+  )
+
+  as.data.frame(out, check.names = FALSE, stringsAsFactors = FALSE)
+}
+
+make_autoplotter_metadata <- function(df_used, sample_names) {
+  df_used <- as.data.frame(df_used, check.names = FALSE, stringsAsFactors = FALSE)
+
+  labs <- as.character(df_used$Label)
+
+  cmap <- make_dark2_color_map(labs)
+
+  meas_rep <- ave(
+    seq_along(labs),
+    labs,
+    FUN = seq_along
+  )
+
+  first_condition_row <- !duplicated(labs)
+
+  plot_order_full <- match(labs, cmap$Condition)
+  colour_full <- cmap$Colour[match(labs, cmap$Condition)]
+
+  tibble::tibble(
+    Filename = as.character(sample_names),
+    Condition = labs,
+    MeasRep = as.integer(meas_rep),
+    ExpRep = NA_character_,
+
+    # Filled only once per unique Condition
+    PlottingOrder = ifelse(first_condition_row, plot_order_full, NA_integer_),
+    Colour = ifelse(first_condition_row, colour_full, NA_character_),
+
+    Relative_Correction = NA_real_,
+    Absolute_Correction = NA_real_
+  )
+}
+
+make_autoplotter_name_map <- function(fmap, volcano = NULL) {
+  fmap <- as.data.frame(fmap, check.names = FALSE, stringsAsFactors = FALSE)
+
+  out <- tibble::tibble(
+    Name = as.character(fmap$Feature)
+  )
+
+  if (!is.null(volcano) && all(c("Feature", "NPC#class", "ClassyFire#class") %in% names(volcano))) {
+    ann <- volcano %>%
+      dplyr::select(
+        Feature,
+        `NPC#class`,
+        `ClassyFire#class`
+      ) %>%
+      dplyr::distinct(Feature, .keep_all = TRUE) %>%
+      dplyr::mutate(
+        `NPC#class` = dplyr::if_else(
+          is.na(`NPC#class`) | `NPC#class` == "Not provided",
+          "",
+          as.character(`NPC#class`)
+        ),
+        `ClassyFire#class` = dplyr::if_else(
+          is.na(`ClassyFire#class`) | `ClassyFire#class` == "Not provided",
+          "",
+          as.character(`ClassyFire#class`)
+        )
+      )
+
+    out <- out %>%
+      dplyr::left_join(ann, by = c("Name" = "Feature"))
+
+  } else {
+    out$`NPC#class` <- ""
+    out$`ClassyFire#class` <- ""
+  }
+
+  out$`NPC#class`[is.na(out$`NPC#class`)] <- ""
+  out$`ClassyFire#class`[is.na(out$`ClassyFire#class`)] <- ""
+
+  out
+}
+
 # ----------------------------- UI -----------------------------------------
 
 ui <- fluidPage(
@@ -762,16 +880,30 @@ tags$hr(),
           tags$hr(),
           actionButton("run_proc", "Run preprocessing", class = "btn btn-success"),
           tags$br(), tags$br(),
-          downloadButton("dl_volcano", "Download volcano table", class = "btn-info"),
+          downloadButton("dl_volcano", "Volcano table csv", class = "btn-info"),
           actionButton("btn1", "?"),
           bsTooltip("btn1", 
           title = "<b>Download table with all calculated statistical values.</b>", "right", trigger = "click", options = list(container = "body")),
 
           tags$br(),tags$br(),
-          downloadButton("dl_matrix", "Download processed table", class = "btn-info"),
+          downloadButton("dl_matrix", "MetaboAnalyst-ready csv", class = "btn-info"),
           actionButton("btn2", "?"),
           bsTooltip("btn2", 
-          title = "<b>Download peak table after all processing steps and <em>Label</em> column.</b><br>Suitable as input in MetaboAnalyst (www.metaboanalyst.ca/).", "right", trigger = "click", options = list(container = "body"))
+          title = "<b>Download peak table after MVI and with <em>Label</em> column.</b><br>Suitable as input in MetaboAnalyst (www.metaboanalyst.ca/).", "right", trigger = "click", options = list(container = "body")),
+        
+        tags$br(),tags$br(),
+        downloadButton(
+          "dl_autoplotter_zip",
+          "AutoPlotter-ready ZIP",
+          class = "btn-info"
+        ),
+        actionButton("btn_auto", "?"),
+        bsTooltip(
+          "btn_auto",
+          title = "<b>Download AutoPlotter-ready ZIP archive.</b><br>Suitable as input as <em>Compounds in Columns</em> in Metabolite AutoPlotter (https://mpietzke.shinyapps.io/AutoPlotter/).",
+          placement = "right",
+          trigger = "click",
+          options = list(container = "body"))
         ),
 
         mainPanel(
@@ -806,21 +938,26 @@ server <- function(input, output, session) {
     shinyjs::disable("run_proc")
     shinyjs::disable("dl_volcano")
     shinyjs::disable("dl_matrix")
+    shinyjs::disable("dl_autoplotter_zip")
   }, once = TRUE)
 
   observe({
     shinyjs::toggleState("run_proc", condition = !is.null(input$file_data))
   })
 
-  observe({
-    if (procReady()) {
-      shinyjs::enable("dl_volcano")
-      shinyjs::enable("dl_matrix")
-    } else {
-      shinyjs::disable("dl_volcano")
-      shinyjs::disable("dl_matrix")
-    }
-  })
+ observe({
+  ids <- c(
+    "dl_volcano",
+    "dl_matrix",
+    "dl_autoplotter_zip"
+  )
+
+  if (procReady()) {
+    lapply(ids, shinyjs::enable)
+  } else {
+    lapply(ids, shinyjs::disable)
+  }
+})
 
   observeEvent(input$file_data, {
     rv$raw <- NULL
@@ -843,6 +980,11 @@ server <- function(input, output, session) {
   procReady <- reactive({
     !is.null(rv$volcano) && nrow(rv$volcano) > 0
   })
+  
+  dataset_name <- reactive({
+  nm <- input$file_data$name %||% "dataset.csv"
+  tools::file_path_sans_ext(basename(nm))
+})
 
   # ---- Load raw data (Robust Switch) ----
   raw_df <- reactive({
@@ -1590,24 +1732,89 @@ observeEvent(input$labels_table_cell_edit, {
 
   # ---- Downloads
   output$dl_volcano <- downloadHandler(
-    filename = function() "volcano_table.csv",
-    content = function(file) {
-      req(rv$volcano)
-      data.table::fwrite(rv$volcano, file)
-    }
-  )
+  filename = function() {
+    paste0(dataset_name(), "_volcano_table.csv")
+  },
+  content = function(file) {
+    req(rv$volcano)
+
+    out <- as.data.frame(rv$volcano, check.names = FALSE, stringsAsFactors = FALSE)
+
+    data.table::fwrite(out, file, na = "")
+  }
+)
 
 output$dl_matrix <- downloadHandler(
-  filename = function() "processed_table.csv",
+  filename = function() {
+    paste0(dataset_name(), "_MetaboAnalyst_table.csv")
+  },
   content = function(file) {
     req(rv$df_used, rv$mat)
 
     out <- as.data.frame(rv$df_used, check.names = FALSE, stringsAsFactors = FALSE)
-    out <- cbind(Sample = rownames(rv$mat), out)
+    out <- cbind(
+      Sample = rownames(rv$mat),
+      out
+    )
 
-    data.table::fwrite(out, file)
+    data.table::fwrite(out, file, na = "")
   }
 )
+
+output$dl_autoplotter_zip <- downloadHandler(
+  filename = function() {
+    nm <- input$file_data$name %||% "dataset.csv"
+    paste0(tools::file_path_sans_ext(basename(nm)), "_AutoPlotter.zip")
+  },
+
+  content = function(file) {
+    req(rv$df_used, rv$mat, rv$fmap)
+
+    zip_dir <- tempfile("autoplotter_")
+    dir.create(zip_dir, recursive = TRUE, showWarnings = FALSE)
+    on.exit(unlink(zip_dir, recursive = TRUE, force = TRUE), add = TRUE)
+
+    data_file <- file.path(zip_dir, "data_table.csv")
+    meta_file <- file.path(zip_dir, "metadata.csv")
+    name_file <- file.path(zip_dir, "name_map.csv")
+
+    autoplotter_data <- make_autoplotter_data(
+      df_used = rv$df_used,
+      sample_names = rownames(rv$mat)
+    )
+
+    autoplotter_metadata <- make_autoplotter_metadata(
+      df_used = rv$df_used,
+      sample_names = rownames(rv$mat)
+    )
+
+    autoplotter_name_map <- make_autoplotter_name_map(
+      fmap = rv$fmap,
+      volcano = rv$volcano
+    )
+
+    data.table::fwrite(autoplotter_data, data_file, na = "")
+    data.table::fwrite(autoplotter_metadata, meta_file, na = "")
+    data.table::fwrite(autoplotter_name_map, name_file, na = "")
+
+    tmp_zip <- tempfile(fileext = ".zip")
+    on.exit(unlink(tmp_zip, force = TRUE), add = TRUE)
+
+    zip::zipr(
+      zipfile = tmp_zip,
+      files = c(data_file, meta_file, name_file),
+      root = zip_dir
+    )
+
+    ok <- file.copy(tmp_zip, file, overwrite = TRUE)
+    if (!ok) {
+      stop("Failed to copy AutoPlotter ZIP archive to download file.")
+    }
+  },
+
+  contentType = "application/zip"
+)
+
 }
 
 shinyApp(ui, server)
