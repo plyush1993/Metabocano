@@ -126,6 +126,179 @@ read_onecol_csv <- function(path) {
   as.character(v[[1]])
 }
 
+parse_suffix_list <- function(x) {
+  if (is.null(x) || length(x) == 0) return(character(0))
+  x <- as.character(x)
+  x <- x[!is.na(x)]
+  x <- unlist(strsplit(x, ",", fixed = TRUE), use.names = FALSE)
+  x <- trimws(x)
+  x[nzchar(x)]
+}
+
+clean_sample_names_for_match <- function(x, enabled = FALSE, remove_suffixes = NULL) {
+  x0 <- as.character(x)
+
+  # normalize even without suffix cleaning
+  out <- x0
+  out <- gsub("\u00A0", " ", out, fixed = TRUE)
+  out <- gsub("[[:space:]]+", " ", out)
+  out <- trimws(out)
+  out <- gsub('^"|"$', "", out)
+
+  if (!isTRUE(enabled)) {
+    return(out)
+  }
+
+  default_suffixes <- c(
+    " Peak area", " Peak Area", "Peak area", "Peak Area",
+    " Peak height", " Peak Height", "Peak height", "Peak Height",
+    "_Area", "_Height",
+    " Area", " Height",
+    ".mzML", ".mzXML", ".raw", ".RAW",
+    ".cdf", ".CDF",
+    ".mzData", ".mzdata",
+    ".wiff", ".WIFF",
+    ".d", ".D"
+  )
+
+  suffixes <- unique(c(parse_suffix_list(remove_suffixes), default_suffixes))
+  suffixes <- suffixes[nzchar(suffixes)]
+
+  strip_one_suffix <- function(v, sfx) {
+    n <- nchar(sfx)
+    if (!is.finite(n) || n < 1) return(v)
+
+    hit <- nchar(v) >= n &
+      tolower(substr(v, nchar(v) - n + 1, nchar(v))) == tolower(sfx)
+
+    v[hit] <- substr(v[hit], 1, nchar(v[hit]) - n)
+    v <- gsub("[[:space:]]+", " ", v)
+    trimws(v)
+  }
+
+  # repeat because names can end as: ".mzML Peak area"
+  # first pass removes "Peak area", second pass removes ".mzML"
+  for (pass in seq_len(20)) {
+    old <- out
+
+    for (sfx in suffixes) {
+      out <- strip_one_suffix(out, sfx)
+    }
+
+    if (identical(old, out)) break
+  }
+
+  out[!nzchar(out)] <- x0[!nzchar(out)]
+  out
+}
+
+guess_metadata_sample_col <- function(cols) {
+  candidates <- c(
+    "Sample", "sample",
+    "SampleName", "sample_name",
+    "Filename", "FileName", "filename",
+    "File", "Name", "Injection", "Run"
+  )
+
+  hit <- candidates[candidates %in% cols]
+  if (length(hit)) hit[1] else cols[1]
+}
+
+guess_metadata_label_col <- function(cols, sample_col = NULL) {
+  cols2 <- setdiff(cols, sample_col)
+
+  candidates <- c(
+    "Condition", "condition",
+    "Label", "label",
+    "Group", "group",
+    "Treatment", "treatment",
+    "Class", "class"
+  )
+
+  hit <- candidates[candidates %in% cols2]
+  if (length(hit)) hit[1] else cols2[1]
+}
+
+read_metadata_csv <- function(upload, context = "metadata labels") {
+  req(upload)
+
+  ext <- tolower(tools::file_ext(upload$name))
+  validate(
+    need(ext == "csv", paste0("Upload a .csv file for ", context, "."))
+  )
+
+  as.data.frame(
+    vroom::vroom(
+      upload$datapath,
+      delim = ",",
+      col_names = TRUE,
+      show_col_types = FALSE
+    ),
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+}
+
+metadata_labels_by_sample <- function(upload,
+                                      sample_names,
+                                      sample_col,
+                                      label_col,
+                                      clean_enabled = FALSE,
+                                      remove_suffixes = NULL,
+                                      context = "metadata labels") {
+  meta <- read_metadata_csv(upload, context = context)
+
+  validate(
+    need(sample_col %in% names(meta), "Selected metadata sample-name column was not found."),
+    need(label_col %in% names(meta), "Selected metadata label column was not found.")
+  )
+
+  app_key <- clean_sample_names_for_match(
+    sample_names,
+    enabled = clean_enabled,
+    remove_suffixes = remove_suffixes
+  )
+
+  meta_key <- clean_sample_names_for_match(
+    meta[[sample_col]],
+    enabled = clean_enabled,
+    remove_suffixes = remove_suffixes
+  )
+
+  validate(
+    need(!anyDuplicated(app_key),
+         "Detected sample names are duplicated after optional cleaning."),
+    need(!anyDuplicated(meta_key),
+         "Metadata sample names are duplicated after optional cleaning.")
+  )
+
+  idx <- match(app_key, meta_key)
+
+  if (any(is.na(idx))) {
+    missing_samples <- app_key[is.na(idx)]
+
+    validate(
+      need(
+        FALSE,
+        paste0(
+          "Metadata file is missing these sample names: ",
+          paste(head(missing_samples, 10), collapse = ", "),
+          if (length(missing_samples) > 10) " ..." else ""
+        )
+      )
+    )
+  }
+
+  labs <- trimws(as.character(meta[[label_col]][idx]))
+
+  validate(
+    need(!any(is.na(labs) | labs == ""),
+         "Selected metadata label column contains empty values.")
+  )
+
+  labs
+}
+
 finite_range <- function(x) {
   x <- x[is.finite(x)]
   if (!length(x)) return(NULL)
@@ -201,7 +374,7 @@ parse_feature_table_to_matrix <- function(raw_df,
   # Using data.table::transpose exactly as original
   mat <- as.data.frame(data.table::transpose(raw_df[, sample_cols, drop = FALSE]),
                        check.names = FALSE, stringsAsFactors = FALSE)
-  rownames(mat) <- clean_sample_names(sample_cols)
+  rownames(mat) <- sample_cols
 
   # feature definition
   id <- as.character(raw_df[[row_id_col]])

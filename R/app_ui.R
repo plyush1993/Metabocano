@@ -81,6 +81,41 @@ tags$head(tags$style(HTML("
     font-weight: bold;
     padding: 5px;
   }
+
+  /* Colored pickerInput buttons for Volcano filters */
+
+.bootstrap-select > .dropdown-toggle[data-id='sel_feat'] {
+  background-color: #66CDAA !important;
+  border-color: #45b894 !important;
+  color: white !important;
+  font-weight: bold !important;
+}
+
+.bootstrap-select > .dropdown-toggle[data-id='npc_filter_values'] {
+  background-color: #18bc9c !important;
+  border-color: #13a085 !important;
+  color: white !important;
+  font-weight: bold !important;
+}
+
+.bootstrap-select > .dropdown-toggle[data-id='classyfire_filter_values'] {
+  background-color: #18bc9c !important;
+  border-color: #13a085 !important;
+  color: white !important;
+  font-weight: bold !important;
+}
+
+/* Highlight selected options inside dropdown */
+.bootstrap-select .dropdown-menu li.selected a {
+  background-color: #dff7ef !important;
+  color: #000000 !important;
+  font-weight: bold !important;
+}
+
+.bootstrap-select .dropdown-menu li.selected a span.check-mark {
+  color: #18bc9c !important;
+}
+
 "))),
 
 tags$head(
@@ -231,6 +266,7 @@ radioButtons(
   "Label source:",
   choices = c(
     "From sample names (token)" = "token",
+    "From metadata CSV (match by sample name)" = "metadata",
     "From uploaded labels CSV (1 column, no header)" = "csv",
     "Manual editable table" = "manual"
   ),
@@ -242,6 +278,59 @@ conditionalPanel(
   textInput("token_sep", "Token separator", value = "_"),
   numericInput("token_index", "Token index (1-based)", value = 2, min = 1, step = 1),
   checkboxInput("clean_sample_names", "Clean sample names (remove extension/Peak area)", TRUE)
+),
+
+conditionalPanel(
+  condition = "input.label_source == 'metadata'",
+
+  fileInput(
+    "file_metadata_labels",
+    "Upload metadata CSV with column names",
+    accept = ".csv"
+  ),
+
+  uiOutput("metadata_sample_col_ui"),
+  uiOutput("metadata_label_col_ui"),
+
+  checkboxInput(
+    "metadata_clean_sample_names",
+    "Clean sample names only for metadata matching",
+    value = FALSE
+  ),
+
+  conditionalPanel(
+    condition = "input.metadata_clean_sample_names == true",
+
+    selectizeInput(
+      "metadata_remove_suffixes",
+      "Remove suffixes/extensions:",
+      choices = c(
+        ".mzML", ".mzXML", ".raw", ".RAW",
+        ".cdf", ".CDF", ".mzData", ".mzdata",
+        ".wiff", ".WIFF", ".d", ".D",
+        " Peak area", " Peak Area",
+        " Peak height", " Peak Height",
+        "_Area", "_Height",
+        " Area", " Height"
+      ),
+      selected = c(
+        " Peak area", " Peak height",
+        "_Area", "_Height",
+        " Area", " Height"
+      ),
+      multiple = TRUE,
+      options = list(
+        create = TRUE,
+        createOnBlur = TRUE,
+        placeholder = "Type custom suffix and press Enter"
+      )
+    )
+  ),
+
+  div(
+    class = "small-note",
+    "Metadata rows are matched by sample name, not by row order. Cleaning is used for matching."
+  )
 ),
 
 conditionalPanel(

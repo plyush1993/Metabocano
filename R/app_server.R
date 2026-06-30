@@ -52,6 +52,27 @@ app_server <- function(input, output, session) {
     rv$volcano <- NULL
   }, ignoreInit = TRUE)
 
+  observeEvent(
+  list(
+    input$label_source,
+    input$file_labels,
+    input$file_metadata_labels,
+    input$metadata_sample_col,
+    input$metadata_label_col,
+    input$metadata_clean_sample_names,
+    input$metadata_remove_suffixes,
+    input$token_sep,
+    input$token_index,
+    input$clean_sample_names
+  ),
+  {
+    rv$labels <- NULL
+    rv$df_used <- NULL
+    rv$volcano <- NULL
+  },
+  ignoreInit = TRUE
+)
+
   rv <- reactiveValues(
     raw = NULL,
     mat = NULL,
@@ -233,6 +254,66 @@ observeEvent(input$labels_table_cell_edit, {
   )
 }, ignoreInit = TRUE)
 
+metadata_raw <- reactive({
+  req(input$file_metadata_labels)
+  read_metadata_csv(input$file_metadata_labels, context = "metadata labels")
+})
+
+
+output$metadata_sample_col_ui <- renderUI({
+  req(metadata_raw())
+
+  cols <- names(metadata_raw())
+
+  selectInput(
+    "metadata_sample_col",
+    "Metadata sample-name column:",
+    choices = cols,
+    selected = guess_metadata_sample_col(cols)
+  )
+})
+
+
+output$metadata_label_col_ui <- renderUI({
+  req(metadata_raw())
+
+  cols <- names(metadata_raw())
+  sample_col <- input$metadata_sample_col %||% guess_metadata_sample_col(cols)
+  choices <- setdiff(cols, sample_col)
+
+  validate(
+    need(length(choices) > 0, "Metadata file has no column available for labels.")
+  )
+
+  selectizeInput(
+    "metadata_label_col",
+    "Metadata column to use as Label:",
+    choices = choices,
+    selected = guess_metadata_label_col(cols, sample_col),
+    multiple = FALSE
+  )
+})
+
+
+metadata_labels <- reactive({
+  req(
+    input$file_metadata_labels,
+    input$metadata_sample_col,
+    input$metadata_label_col,
+    sample_names()
+  )
+
+  metadata_labels_by_sample(
+    upload = input$file_metadata_labels,
+    sample_names = sample_names(),
+    sample_col = input$metadata_sample_col,
+    label_col = input$metadata_label_col,
+    clean_enabled = isTRUE(input$metadata_clean_sample_names),
+    remove_suffixes = input$metadata_remove_suffixes %||% character(0),
+    context = "metadata labels"
+  )
+})
+
   # ---- Labels ----
   labels_vec <- reactive({
   req(sample_names())
@@ -241,24 +322,28 @@ observeEvent(input$labels_table_cell_edit, {
 
   if (identical(src, "csv")) {
 
-    req(input$file_labels)
+  req(input$file_labels)
 
-    v <- read_onecol_csv(input$file_labels$datapath)
-    v <- trimws(v)
+  v <- read_onecol_csv(input$file_labels$datapath)
+  v <- trimws(v)
 
-    validate(
-      need(
-        length(v) == length(sample_names()),
-        sprintf(
-          "Labels count (%d) must match #samples (%d).",
-          length(v), length(sample_names())
-        )
+  validate(
+    need(
+      length(v) == length(sample_names()),
+      sprintf(
+        "Labels count (%d) must match #samples (%d).",
+        length(v), length(sample_names())
       )
     )
+  )
 
-    v
+  v
 
-  } else if (identical(src, "manual")) {
+} else if (identical(src, "metadata")) {
+
+  metadata_labels()
+
+} else if (identical(src, "manual")) {
 
     tbl <- manual_labels()
     req(tbl)
@@ -501,9 +586,13 @@ observeEvent(input$labels_table_cell_edit, {
       updateMaterialSwitch(session, "sig_only", value = FALSE)
       updateMaterialSwitch(session, "use_fdr_filter", value = FALSE)
       updateMaterialSwitch(session, "use_fc_filter",  value = FALSE)
+      updateMaterialSwitch(session, "use_npc_filter", value = FALSE)
+      updateMaterialSwitch(session, "use_classyfire_filter", value = FALSE)
 
       # pickers / radios
       updatePickerInput(session, "sel_feat", selected = character(0))
+      updatePickerInput(session, "npc_filter_values", selected = character(0))
+      updatePickerInput(session, "classyfire_filter_values", selected = character(0))
       updateRadioButtons(session, "color_by", selected = "Groups")
       updateRadioButtons(session, "present_as", selected = "Boxplot")
       updateRadioButtons(session, "fc_dir", selected = "both")
@@ -522,6 +611,23 @@ observeEvent(input$labels_table_cell_edit, {
       updateSliderInput(session, "fc_thr", value = 1)
     })
 
+  annotation_filter_choices <- reactive({
+  req(procReady())
+
+  dd <- rv$volcano
+
+  clean_choices <- function(x) {
+    x <- trimws(as.character(x))
+    x <- x[!is.na(x) & nzchar(x) & x != "Not provided"]
+    sort(unique(x))
+  }
+
+  list(
+    npc = clean_choices(dd$`NPC#class`),
+    classyfire = clean_choices(dd$`ClassyFire#class`)
+  )
+})
+
   output$volcano_sidebar <- renderUI({
     if (!procReady()) {
       return(div(class="highlight",
@@ -532,14 +638,92 @@ observeEvent(input$labels_table_cell_edit, {
       actionButton("reset_filters", "Reset filters", class = "btn btn-warning"),
       br(),
       br(),
-      materialSwitch("sig_only", "Significant only", value = FALSE, status = "info"),
-        pickerInput(
-        inputId = "sel_feat",
-        label   = "Select/deselect features (optional):",
-        choices = sort(unique(rv$volcano$Feature)),
-        options = list(`actions-box` = TRUE, `live-search` = TRUE),
-        multiple = TRUE
-      ),
+      materialSwitch("sig_only", "Significant only", value = FALSE, status = "success"),
+
+tags$hr(),
+h4(class = "highlight", "Annotation filters"),
+
+materialSwitch(
+  "use_npc_filter",
+  "Filter by NPC class",
+  value = FALSE,
+  status = "success"
+),
+
+conditionalPanel(
+  condition = "input.use_npc_filter == true",
+  if (length(annotation_filter_choices()$npc) > 0) {
+    pickerInput(
+      inputId = "npc_filter_values",
+      label = "NPC class(es):",
+      choices = annotation_filter_choices()$npc,
+      selected = character(0),
+      multiple = TRUE,
+      options = list(
+  `actions-box` = TRUE,
+  `live-search` = TRUE,
+  `none-selected-text` = "Select NPC class(es)",
+  `style` = "btn-success",
+  `selected-text-format` = "count > 1",
+  `count-selected-text` = "{0} NPC class(es) selected"
+)
+    )
+  } else {
+    div(
+      class = "small-note",
+      "No NPC classes detected. Upload SIRIUS annotation and rerun preprocessing."
+    )
+  }
+),
+
+materialSwitch(
+  "use_classyfire_filter",
+  "Filter by ClassyFire class",
+  value = FALSE,
+  status = "success"
+),
+
+conditionalPanel(
+  condition = "input.use_classyfire_filter == true",
+  if (length(annotation_filter_choices()$classyfire) > 0) {
+    pickerInput(
+      inputId = "classyfire_filter_values",
+      label = "ClassyFire class(es):",
+      choices = annotation_filter_choices()$classyfire,
+      selected = character(0),
+      multiple = TRUE,
+      options = list(
+  `actions-box` = TRUE,
+  `live-search` = TRUE,
+  `none-selected-text` = "Select ClassyFire class(es)",
+  `style` = "btn-success",
+  `selected-text-format` = "count > 1",
+  `count-selected-text` = "{0} ClassyFire class(es) selected"
+)
+    )
+  } else {
+    div(
+      class = "small-note",
+      "No ClassyFire classes detected. Upload SIRIUS annotation and rerun preprocessing."
+    )
+  }
+),
+
+tags$hr(),
+
+pickerInput(
+  inputId = "sel_feat",
+  label   = "Select/deselect features (optional):",
+  choices = sort(unique(rv$volcano$Feature)),
+  options = list(
+  `actions-box` = TRUE,
+  `live-search` = TRUE,
+  `style` = "btn-success",
+  `selected-text-format` = "count > 2",
+  `count-selected-text` = "{0} feature(s) selected"
+),
+  multiple = TRUE
+),
       br(),
       radioButtons(
         "color_by",
@@ -630,11 +814,35 @@ observeEvent(input$labels_table_cell_edit, {
     dd <- rv$volcano
 
     if (!is.null(input$sel_feat) && length(input$sel_feat) > 0) {
-      return(dd %>% dplyr::filter(Feature %in% input$sel_feat))
-    }
+  dd <- dd %>% dplyr::filter(Feature %in% input$sel_feat)
+}
     if (isTRUE(input$sig_only)) {
       dd <- dd %>% dplyr::filter(Significant)
     }
+
+    if (isTRUE(input$use_npc_filter)) {
+  validate(
+    need(
+      !is.null(input$npc_filter_values) && length(input$npc_filter_values) > 0,
+      "NPC filter is enabled. Select at least one NPC class."
+    )
+  )
+
+  dd <- dd %>%
+    dplyr::filter(`NPC#class` %in% input$npc_filter_values)
+}
+
+if (isTRUE(input$use_classyfire_filter)) {
+  validate(
+    need(
+      !is.null(input$classyfire_filter_values) && length(input$classyfire_filter_values) > 0,
+      "ClassyFire filter is enabled. Select at least one ClassyFire class."
+    )
+  )
+
+  dd <- dd %>%
+    dplyr::filter(`ClassyFire#class` %in% input$classyfire_filter_values)
+}
 
     dd <- dd %>%
       dplyr::filter(
@@ -898,4 +1106,5 @@ output$dl_autoplotter_zip <- downloadHandler(
 
   contentType = "application/zip"
 )
+
 }
