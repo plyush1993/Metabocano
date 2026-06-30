@@ -162,6 +162,179 @@ read_onecol_csv <- function(path) {
   as.character(v[[1]])
 }
 
+parse_suffix_list <- function(x) {
+  if (is.null(x) || length(x) == 0) return(character(0))
+  x <- as.character(x)
+  x <- x[!is.na(x)]
+  x <- unlist(strsplit(x, ",", fixed = TRUE), use.names = FALSE)
+  x <- trimws(x)
+  x[nzchar(x)]
+}
+
+clean_sample_names_for_match <- function(x, enabled = FALSE, remove_suffixes = NULL) {
+  x0 <- as.character(x)
+
+  # normalize even without suffix cleaning
+  out <- x0
+  out <- gsub("\u00A0", " ", out, fixed = TRUE)
+  out <- gsub("[[:space:]]+", " ", out)
+  out <- trimws(out)
+  out <- gsub('^"|"$', "", out)
+
+  if (!isTRUE(enabled)) {
+    return(out)
+  }
+
+  default_suffixes <- c(
+    " Peak area", " Peak Area", "Peak area", "Peak Area",
+    " Peak height", " Peak Height", "Peak height", "Peak Height",
+    "_Area", "_Height",
+    " Area", " Height",
+    ".mzML", ".mzXML", ".raw", ".RAW",
+    ".cdf", ".CDF",
+    ".mzData", ".mzdata",
+    ".wiff", ".WIFF",
+    ".d", ".D"
+  )
+
+  suffixes <- unique(c(parse_suffix_list(remove_suffixes), default_suffixes))
+  suffixes <- suffixes[nzchar(suffixes)]
+
+  strip_one_suffix <- function(v, sfx) {
+    n <- nchar(sfx)
+    if (!is.finite(n) || n < 1) return(v)
+
+    hit <- nchar(v) >= n &
+      tolower(substr(v, nchar(v) - n + 1, nchar(v))) == tolower(sfx)
+
+    v[hit] <- substr(v[hit], 1, nchar(v[hit]) - n)
+    v <- gsub("[[:space:]]+", " ", v)
+    trimws(v)
+  }
+
+  # repeat because names can end as: ".mzML Peak area"
+  # first pass removes "Peak area", second pass removes ".mzML"
+  for (pass in seq_len(20)) {
+    old <- out
+
+    for (sfx in suffixes) {
+      out <- strip_one_suffix(out, sfx)
+    }
+
+    if (identical(old, out)) break
+  }
+
+  out[!nzchar(out)] <- x0[!nzchar(out)]
+  out
+}
+
+guess_metadata_sample_col <- function(cols) {
+  candidates <- c(
+    "Sample", "sample",
+    "SampleName", "sample_name",
+    "Filename", "FileName", "filename",
+    "File", "Name", "Injection", "Run"
+  )
+
+  hit <- candidates[candidates %in% cols]
+  if (length(hit)) hit[1] else cols[1]
+}
+
+guess_metadata_label_col <- function(cols, sample_col = NULL) {
+  cols2 <- setdiff(cols, sample_col)
+
+  candidates <- c(
+    "Condition", "condition",
+    "Label", "label",
+    "Group", "group",
+    "Treatment", "treatment",
+    "Class", "class"
+  )
+
+  hit <- candidates[candidates %in% cols2]
+  if (length(hit)) hit[1] else cols2[1]
+}
+
+read_metadata_csv <- function(upload, context = "metadata labels") {
+  req(upload)
+
+  ext <- tolower(tools::file_ext(upload$name))
+  validate(
+    need(ext == "csv", paste0("Upload a .csv file for ", context, "."))
+  )
+
+  as.data.frame(
+    vroom::vroom(
+      upload$datapath,
+      delim = ",",
+      col_names = TRUE,
+      show_col_types = FALSE
+    ),
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+}
+
+metadata_labels_by_sample <- function(upload,
+                                      sample_names,
+                                      sample_col,
+                                      label_col,
+                                      clean_enabled = FALSE,
+                                      remove_suffixes = NULL,
+                                      context = "metadata labels") {
+  meta <- read_metadata_csv(upload, context = context)
+
+  validate(
+    need(sample_col %in% names(meta), "Selected metadata sample-name column was not found."),
+    need(label_col %in% names(meta), "Selected metadata label column was not found.")
+  )
+
+  app_key <- clean_sample_names_for_match(
+    sample_names,
+    enabled = clean_enabled,
+    remove_suffixes = remove_suffixes
+  )
+
+  meta_key <- clean_sample_names_for_match(
+    meta[[sample_col]],
+    enabled = clean_enabled,
+    remove_suffixes = remove_suffixes
+  )
+
+  validate(
+    need(!anyDuplicated(app_key),
+         "Detected sample names are duplicated after optional cleaning."),
+    need(!anyDuplicated(meta_key),
+         "Metadata sample names are duplicated after optional cleaning.")
+  )
+
+  idx <- match(app_key, meta_key)
+
+  if (any(is.na(idx))) {
+    missing_samples <- app_key[is.na(idx)]
+
+    validate(
+      need(
+        FALSE,
+        paste0(
+          "Metadata file is missing these sample names: ",
+          paste(head(missing_samples, 10), collapse = ", "),
+          if (length(missing_samples) > 10) " ..." else ""
+        )
+      )
+    )
+  }
+
+  labs <- trimws(as.character(meta[[label_col]][idx]))
+
+  validate(
+    need(!any(is.na(labs) | labs == ""),
+         "Selected metadata label column contains empty values.")
+  )
+
+  labs
+}
+
 finite_range <- function(x) {
   x <- x[is.finite(x)]
   if (!length(x)) return(NULL)
@@ -237,7 +410,7 @@ parse_feature_table_to_matrix <- function(raw_df,
   # Using data.table::transpose exactly as original
   mat <- as.data.frame(data.table::transpose(raw_df[, sample_cols, drop = FALSE]),
                        check.names = FALSE, stringsAsFactors = FALSE)
-  rownames(mat) <- clean_sample_names(sample_cols)
+  rownames(mat) <- sample_cols
 
   # feature definition
   id <- as.character(raw_df[[row_id_col]])
@@ -602,6 +775,41 @@ tags$head(tags$style(HTML("
     font-weight: bold;
     padding: 5px;
   }
+  
+  /* Colored pickerInput buttons for Volcano filters */
+
+.bootstrap-select > .dropdown-toggle[data-id='sel_feat'] {
+  background-color: #66CDAA !important;
+  border-color: #45b894 !important;
+  color: white !important;
+  font-weight: bold !important;
+}
+
+.bootstrap-select > .dropdown-toggle[data-id='npc_filter_values'] {
+  background-color: #18bc9c !important;
+  border-color: #13a085 !important;
+  color: white !important;
+  font-weight: bold !important;
+}
+
+.bootstrap-select > .dropdown-toggle[data-id='classyfire_filter_values'] {
+  background-color: #18bc9c !important;
+  border-color: #13a085 !important;
+  color: white !important;
+  font-weight: bold !important;
+}
+
+/* Highlight selected options inside dropdown */
+.bootstrap-select .dropdown-menu li.selected a {
+  background-color: #dff7ef !important;
+  color: #000000 !important;
+  font-weight: bold !important;
+}
+
+.bootstrap-select .dropdown-menu li.selected a span.check-mark {
+  color: #18bc9c !important;
+}
+  
 "))),
 
 tags$head(
@@ -752,6 +960,7 @@ radioButtons(
   "Label source:",
   choices = c(
     "From sample names (token)" = "token",
+    "From metadata CSV (match by sample name)" = "metadata",
     "From uploaded labels CSV (1 column, no header)" = "csv",
     "Manual editable table" = "manual"
   ),
@@ -763,6 +972,59 @@ conditionalPanel(
   textInput("token_sep", "Token separator", value = "_"),
   numericInput("token_index", "Token index (1-based)", value = 2, min = 1, step = 1),
   checkboxInput("clean_sample_names", "Clean sample names (remove extension/Peak area)", TRUE)
+),
+
+conditionalPanel(
+  condition = "input.label_source == 'metadata'",
+
+  fileInput(
+    "file_metadata_labels",
+    "Upload metadata CSV with column names",
+    accept = ".csv"
+  ),
+
+  uiOutput("metadata_sample_col_ui"),
+  uiOutput("metadata_label_col_ui"),
+
+  checkboxInput(
+    "metadata_clean_sample_names",
+    "Clean sample names only for metadata matching",
+    value = FALSE
+  ),
+
+  conditionalPanel(
+    condition = "input.metadata_clean_sample_names == true",
+
+    selectizeInput(
+      "metadata_remove_suffixes",
+      "Remove suffixes/extensions:",
+      choices = c(
+        ".mzML", ".mzXML", ".raw", ".RAW",
+        ".cdf", ".CDF", ".mzData", ".mzdata",
+        ".wiff", ".WIFF", ".d", ".D",
+        " Peak area", " Peak Area",
+        " Peak height", " Peak Height",
+        "_Area", "_Height",
+        " Area", " Height"
+      ),
+      selected = c(
+        " Peak area", " Peak height",
+        "_Area", "_Height",
+        " Area", " Height"
+      ),
+      multiple = TRUE,
+      options = list(
+        create = TRUE,
+        createOnBlur = TRUE,
+        placeholder = "Type custom suffix and press Enter"
+      )
+    )
+  ),
+
+  div(
+    class = "small-note",
+    "Metadata rows are matched by sample name, not by row order. Cleaning is used for matching."
+  )
 ),
 
 conditionalPanel(
@@ -968,6 +1230,27 @@ server <- function(input, output, session) {
     rv$volcano <- NULL
   }, ignoreInit = TRUE)
 
+  observeEvent(
+  list(
+    input$label_source,
+    input$file_labels,
+    input$file_metadata_labels,
+    input$metadata_sample_col,
+    input$metadata_label_col,
+    input$metadata_clean_sample_names,
+    input$metadata_remove_suffixes,
+    input$token_sep,
+    input$token_index,
+    input$clean_sample_names
+  ),
+  {
+    rv$labels <- NULL
+    rv$df_used <- NULL
+    rv$volcano <- NULL
+  },
+  ignoreInit = TRUE
+)
+  
   rv <- reactiveValues(
     raw = NULL,
     mat = NULL,
@@ -1149,6 +1432,66 @@ observeEvent(input$labels_table_cell_edit, {
   )
 }, ignoreInit = TRUE)
   
+metadata_raw <- reactive({
+  req(input$file_metadata_labels)
+  read_metadata_csv(input$file_metadata_labels, context = "metadata labels")
+})
+
+
+output$metadata_sample_col_ui <- renderUI({
+  req(metadata_raw())
+
+  cols <- names(metadata_raw())
+
+  selectInput(
+    "metadata_sample_col",
+    "Metadata sample-name column:",
+    choices = cols,
+    selected = guess_metadata_sample_col(cols)
+  )
+})
+
+
+output$metadata_label_col_ui <- renderUI({
+  req(metadata_raw())
+
+  cols <- names(metadata_raw())
+  sample_col <- input$metadata_sample_col %||% guess_metadata_sample_col(cols)
+  choices <- setdiff(cols, sample_col)
+
+  validate(
+    need(length(choices) > 0, "Metadata file has no column available for labels.")
+  )
+
+  selectizeInput(
+    "metadata_label_col",
+    "Metadata column to use as Label:",
+    choices = choices,
+    selected = guess_metadata_label_col(cols, sample_col),
+    multiple = FALSE
+  )
+})
+
+
+metadata_labels <- reactive({
+  req(
+    input$file_metadata_labels,
+    input$metadata_sample_col,
+    input$metadata_label_col,
+    sample_names()
+  )
+
+  metadata_labels_by_sample(
+    upload = input$file_metadata_labels,
+    sample_names = sample_names(),
+    sample_col = input$metadata_sample_col,
+    label_col = input$metadata_label_col,
+    clean_enabled = isTRUE(input$metadata_clean_sample_names),
+    remove_suffixes = input$metadata_remove_suffixes %||% character(0),
+    context = "metadata labels"
+  )
+})
+
   # ---- Labels ----
   labels_vec <- reactive({
   req(sample_names())
@@ -1157,24 +1500,28 @@ observeEvent(input$labels_table_cell_edit, {
 
   if (identical(src, "csv")) {
 
-    req(input$file_labels)
+  req(input$file_labels)
 
-    v <- read_onecol_csv(input$file_labels$datapath)
-    v <- trimws(v)
+  v <- read_onecol_csv(input$file_labels$datapath)
+  v <- trimws(v)
 
-    validate(
-      need(
-        length(v) == length(sample_names()),
-        sprintf(
-          "Labels count (%d) must match #samples (%d).",
-          length(v), length(sample_names())
-        )
+  validate(
+    need(
+      length(v) == length(sample_names()),
+      sprintf(
+        "Labels count (%d) must match #samples (%d).",
+        length(v), length(sample_names())
       )
     )
+  )
 
-    v
+  v
 
-  } else if (identical(src, "manual")) {
+} else if (identical(src, "metadata")) {
+
+  metadata_labels()
+
+} else if (identical(src, "manual")) {
 
     tbl <- manual_labels()
     req(tbl)
@@ -1417,9 +1764,13 @@ observeEvent(input$labels_table_cell_edit, {
       updateMaterialSwitch(session, "sig_only", value = FALSE)
       updateMaterialSwitch(session, "use_fdr_filter", value = FALSE)
       updateMaterialSwitch(session, "use_fc_filter",  value = FALSE)
-    
+      updateMaterialSwitch(session, "use_npc_filter", value = FALSE)
+      updateMaterialSwitch(session, "use_classyfire_filter", value = FALSE)
+      
       # pickers / radios
       updatePickerInput(session, "sel_feat", selected = character(0))
+      updatePickerInput(session, "npc_filter_values", selected = character(0))
+      updatePickerInput(session, "classyfire_filter_values", selected = character(0))
       updateRadioButtons(session, "color_by", selected = "Groups")
       updateRadioButtons(session, "present_as", selected = "Boxplot")
       updateRadioButtons(session, "fc_dir", selected = "both")
@@ -1438,6 +1789,23 @@ observeEvent(input$labels_table_cell_edit, {
       updateSliderInput(session, "fc_thr", value = 1)
     })
   
+  annotation_filter_choices <- reactive({
+  req(procReady())
+
+  dd <- rv$volcano
+
+  clean_choices <- function(x) {
+    x <- trimws(as.character(x))
+    x <- x[!is.na(x) & nzchar(x) & x != "Not provided"]
+    sort(unique(x))
+  }
+
+  list(
+    npc = clean_choices(dd$`NPC#class`),
+    classyfire = clean_choices(dd$`ClassyFire#class`)
+  )
+})
+  
   output$volcano_sidebar <- renderUI({
     if (!procReady()) {
       return(div(class="highlight",
@@ -1448,14 +1816,92 @@ observeEvent(input$labels_table_cell_edit, {
       actionButton("reset_filters", "Reset filters", class = "btn btn-warning"),
       br(),
       br(),
-      materialSwitch("sig_only", "Significant only", value = FALSE, status = "info"),
-        pickerInput(
-        inputId = "sel_feat",
-        label   = "Select/deselect features (optional):",
-        choices = sort(unique(rv$volcano$Feature)),
-        options = list(`actions-box` = TRUE, `live-search` = TRUE),
-        multiple = TRUE
-      ),
+      materialSwitch("sig_only", "Significant only", value = FALSE, status = "success"),
+
+tags$hr(),
+h4(class = "highlight", "Annotation filters"),
+
+materialSwitch(
+  "use_npc_filter",
+  "Filter by NPC class",
+  value = FALSE,
+  status = "success"
+),
+
+conditionalPanel(
+  condition = "input.use_npc_filter == true",
+  if (length(annotation_filter_choices()$npc) > 0) {
+    pickerInput(
+      inputId = "npc_filter_values",
+      label = "NPC class(es):",
+      choices = annotation_filter_choices()$npc,
+      selected = character(0),
+      multiple = TRUE,
+      options = list(
+  `actions-box` = TRUE,
+  `live-search` = TRUE,
+  `none-selected-text` = "Select NPC class(es)",
+  `style` = "btn-success",
+  `selected-text-format` = "count > 1",
+  `count-selected-text` = "{0} NPC class(es) selected"
+)
+    )
+  } else {
+    div(
+      class = "small-note",
+      "No NPC classes detected. Upload SIRIUS annotation and rerun preprocessing."
+    )
+  }
+),
+
+materialSwitch(
+  "use_classyfire_filter",
+  "Filter by ClassyFire class",
+  value = FALSE,
+  status = "success"
+),
+
+conditionalPanel(
+  condition = "input.use_classyfire_filter == true",
+  if (length(annotation_filter_choices()$classyfire) > 0) {
+    pickerInput(
+      inputId = "classyfire_filter_values",
+      label = "ClassyFire class(es):",
+      choices = annotation_filter_choices()$classyfire,
+      selected = character(0),
+      multiple = TRUE,
+      options = list(
+  `actions-box` = TRUE,
+  `live-search` = TRUE,
+  `none-selected-text` = "Select ClassyFire class(es)",
+  `style` = "btn-success",
+  `selected-text-format` = "count > 1",
+  `count-selected-text` = "{0} ClassyFire class(es) selected"
+)
+    )
+  } else {
+    div(
+      class = "small-note",
+      "No ClassyFire classes detected. Upload SIRIUS annotation and rerun preprocessing."
+    )
+  }
+),
+
+tags$hr(),
+
+pickerInput(
+  inputId = "sel_feat",
+  label   = "Select/deselect features (optional):",
+  choices = sort(unique(rv$volcano$Feature)),
+  options = list(
+  `actions-box` = TRUE,
+  `live-search` = TRUE,
+  `style` = "btn-success",
+  `selected-text-format` = "count > 2",
+  `count-selected-text` = "{0} feature(s) selected"
+),
+  multiple = TRUE
+),
       br(),
       radioButtons(
         "color_by",
@@ -1546,12 +1992,36 @@ observeEvent(input$labels_table_cell_edit, {
     dd <- rv$volcano
   
     if (!is.null(input$sel_feat) && length(input$sel_feat) > 0) {
-      return(dd %>% dplyr::filter(Feature %in% input$sel_feat))
-    }
+  dd <- dd %>% dplyr::filter(Feature %in% input$sel_feat)
+}
     if (isTRUE(input$sig_only)) {
       dd <- dd %>% dplyr::filter(Significant)
     }
   
+    if (isTRUE(input$use_npc_filter)) {
+  validate(
+    need(
+      !is.null(input$npc_filter_values) && length(input$npc_filter_values) > 0,
+      "NPC filter is enabled. Select at least one NPC class."
+    )
+  )
+
+  dd <- dd %>%
+    dplyr::filter(`NPC#class` %in% input$npc_filter_values)
+}
+
+if (isTRUE(input$use_classyfire_filter)) {
+  validate(
+    need(
+      !is.null(input$classyfire_filter_values) && length(input$classyfire_filter_values) > 0,
+      "ClassyFire filter is enabled. Select at least one ClassyFire class."
+    )
+  )
+
+  dd <- dd %>%
+    dplyr::filter(`ClassyFire#class` %in% input$classyfire_filter_values)
+}
+    
     dd <- dd %>%
       dplyr::filter(
         is.finite(mz), is.finite(RT), is.finite(Mean),
