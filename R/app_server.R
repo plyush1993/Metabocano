@@ -607,8 +607,10 @@ metadata_labels <- reactive({
       if (!is.null(rtr)) updateSliderInput(session, "rt_range", value = c(rtr[1], rtr[2]))
       if (!is.null(mr))  updateSliderInput(session, "intensity_range", value = c(round(mr[1], 1), round(mr[2], 1)))
 
-      updateSliderInput(session, "fdr_cutoff", value = 1.30103)
+      updateNumericInput(session, "sig_p_cutoff", value = 0.05)
       updateSliderInput(session, "fc_thr", value = 1)
+      updateSelectInput(session, "volcano_palette", selected = "Set1")
+      updateSelectInput(session, "box_palette", selected = "Dark2")
     })
 
   annotation_filter_choices <- reactive({
@@ -741,6 +743,20 @@ pickerInput(
         inline = TRUE
       ),
 
+selectInput(
+  "volcano_palette",
+  "Volcano palette:",
+  choices = palette_choices,
+  selected = "Set1"
+),
+
+selectInput(
+  "box_palette",
+  "Boxplot/scatter palette:",
+  choices = palette_choices,
+  selected = "Dark2"
+),
+
       uiOutput("volcano_sliders")
     )
   })
@@ -783,28 +799,54 @@ pickerInput(
                   max = round(log10(max(dd$Mean+1.1, na.rm = TRUE)),1),
                   value = round(log10(range(dd$Mean+1.1, na.rm = TRUE)),1),
                   step = 0.1),
-          tags$hr(),
-       materialSwitch("use_fdr_filter", "Filter by Adj.p-value", value = FALSE, status = "success"),
-    conditionalPanel(
-      condition = "input.use_fdr_filter == true",
-      sliderInput("fdr_cutoff", "-log10(Adj.p-value):",
-                  min = 0, max = yMax, value = 1.30103, step = 0.01),
-      uiOutput("fdr_equiv_text")
-    ),
 
-    materialSwitch("use_fc_filter", "Filter by Fold-Change", value = FALSE, status = "success"),
-    conditionalPanel(
-      condition = "input.use_fc_filter == true",
-      sliderInput("fc_thr", "FC threshold (|log2FC| ≥):",
-                  min = 0, max = round(fcmax, 1), value = 1, step = 0.1),
-      radioButtons(
-        "fc_dir",
-        "Direction:",
-        choices = c("Both sides" = "both", "Up only" = "up", "Down only" = "down"),
-        selected = "both",
-        inline = TRUE
-      )
-    ))
+          tags$hr(),
+
+h4(class = "highlight", "Significance thresholds"),
+
+numericInput(
+  "sig_p_cutoff",
+  "Adj.p-value cutoff:",
+  value = 0.05,
+  min = 0,
+  max = 1,
+  step = 0.001
+),
+
+sliderInput(
+  "fc_thr",
+  "FC threshold (|log2FC| ≥):",
+  min = 0,
+  max = max(1, round(fcmax, 1)),
+  value = 1,
+  step = 0.1
+),
+
+materialSwitch(
+  "use_fdr_filter",
+  "Filter by Adj.p-value threshold",
+  value = FALSE,
+  status = "success"
+),
+
+materialSwitch(
+  "use_fc_filter",
+  "Filter by Fold-Change threshold",
+  value = FALSE,
+  status = "success"
+),
+
+conditionalPanel(
+  condition = "input.use_fc_filter == true",
+  radioButtons(
+    "fc_dir",
+    "Direction:",
+    choices = c("Both sides" = "both", "Up only" = "up", "Down only" = "down"),
+    selected = "both",
+    inline = TRUE
+  )
+)
+    )
   })
 
   # ---- Filtered volcano data
@@ -812,13 +854,24 @@ pickerInput(
     req(procReady(), input$mz_range, input$rt_range, input$intensity_range)
 
     dd <- rv$volcano
+    pcut <- suppressWarnings(as.numeric(input$sig_p_cutoff %||% 0.05))
+    if (!is.finite(pcut) || pcut <= 0 || pcut > 1) pcut <- 0.05
+
+    fcut <- suppressWarnings(as.numeric(input$fc_thr %||% 1))
+    if (!is.finite(fcut) || fcut < 0) fcut <- 1
 
     if (!is.null(input$sel_feat) && length(input$sel_feat) > 0) {
   dd <- dd %>% dplyr::filter(Feature %in% input$sel_feat)
 }
     if (isTRUE(input$sig_only)) {
-      dd <- dd %>% dplyr::filter(Significant)
-    }
+  dd <- dd %>%
+    dplyr::filter(
+      is.finite(`Adj.p-value`),
+      `Adj.p-value` <= pcut,
+      is.finite(FC),
+      abs(FC) >= fcut
+    )
+}
 
     if (isTRUE(input$use_npc_filter)) {
   validate(
@@ -854,17 +907,15 @@ if (isTRUE(input$use_classyfire_filter)) {
       )
 
     if (isTRUE(input$use_fdr_filter)) {
-      thr <- input$fdr_cutoff %||% 1.30103
-      dd <- dd %>% dplyr::filter(is.finite(`Adj.p-value.log`), `Adj.p-value.log` >= thr)
-    }
-
-    output$fdr_equiv_text <- renderUI({
-      req(input$fdr_cutoff)
-      tags$small(sprintf("Equivalent Adj.p-value ≤ %.3g", 10^(-input$fdr_cutoff)))
-    })
+  dd <- dd %>%
+    dplyr::filter(
+      is.finite(`Adj.p-value`),
+      `Adj.p-value` <= pcut
+    )
+}
 
     if (isTRUE(input$use_fc_filter)) {
-      thr <- input$fc_thr
+      thr <- fcut
       if (input$fc_dir == "both") {
         dd <- dd %>% dplyr::filter(abs(FC) >= thr)
       } else if (input$fc_dir == "up") {
@@ -899,36 +950,52 @@ if (isTRUE(input$use_classyfire_filter)) {
       "<br>ClassyFire: ", dd$`ClassyFire#class`
     )
 
-    fc_line <- if (isTRUE(input$use_fc_filter)) input$fc_thr else 1
-    ythr <- if (isTRUE(input$use_fdr_filter)) (input$fdr_cutoff %||% 1.30103) else 1.30103
+    fc_line <- suppressWarnings(as.numeric(input$fc_thr %||% 1))
+    if (!is.finite(fc_line) || fc_line < 0) fc_line <- 1
 
-    shapes <- list()
+    p_thr <- suppressWarnings(as.numeric(input$sig_p_cutoff %||% 0.05))
+    if (!is.finite(p_thr) || p_thr <= 0 || p_thr > 1) p_thr <- 0.05
 
-    if (isTRUE(input$use_fc_filter)) {
-      if (input$fc_dir %in% c("both", "down")) {
-        shapes <- c(shapes, list(list(type="line", x0=-fc_line, x1=-fc_line, xref="x",
-                                      y0=0, y1=1, yref="paper", line=list(dash="dot"))))
-      }
-      if (input$fc_dir %in% c("both", "up")) {
-        shapes <- c(shapes, list(list(type="line", x0= fc_line, x1= fc_line, xref="x",
-                                      y0=0, y1=1, yref="paper", line=list(dash="dot"))))
-      }
-    } else {
-      shapes <- c(shapes, list(
-        list(type="line", x0=-1, x1=-1, xref="x", y0=0, y1=1, yref="paper", line=list(dash="dot")),
-        list(type="line", x0= 1, x1= 1, xref="x", y0=0, y1=1, yref="paper", line=list(dash="dot"))
-      ))
-    }
+    ythr <- -log10(pmax(p_thr, .Machine$double.xmin))
 
-    shapes <- c(shapes, list(
-      list(type="line", x0=0, x1=1, xref="paper", y0=ythr, y1=ythr, yref="y", line=list(dash="dot"))
-    ))
+    shapes <- list(
+  list(
+    type = "line",
+    x0 = -fc_line,
+    x1 = -fc_line,
+    xref = "x",
+    y0 = 0,
+    y1 = 1,
+    yref = "paper",
+    line = list(dash = "dot")
+  ),
+  list(
+    type = "line",
+    x0 = fc_line,
+    x1 = fc_line,
+    xref = "x",
+    y0 = 0,
+    y1 = 1,
+    yref = "paper",
+    line = list(dash = "dot")
+  ),
+  list(
+    type = "line",
+    x0 = 0,
+    x1 = 1,
+    xref = "paper",
+    y0 = ythr,
+    y1 = ythr,
+    yref = "y",
+    line = list(dash = "dot")
+  )
+)
 
     if (input$color_by == "Groups") {
       plot_ly(
         data = dd,
         x = ~FC, y = ~`Adj.p-value.log`,
-        colors = "Set1",
+        colors = make_palette(input$volcano_palette %||% "Set1", length(unique(dd$Groups))),
         color = ~Groups,
         type = "scatter", mode = "markers",
         text = hover_txt, hoverinfo = "text",
@@ -948,7 +1015,7 @@ if (isTRUE(input$use_classyfire_filter)) {
         x = ~FC, y = ~`Adj.p-value.log`,
         color = ~log10(Mean + 1.1),
         symbol = ~Groups,
-        colors = viridis(12),
+        colors = make_palette(input$volcano_palette %||% "viridis", 12),
         type = "scatter", mode = "markers",
         text = hover_txt, hoverinfo = "text",
         key = ~key,
@@ -985,10 +1052,12 @@ if (isTRUE(input$use_classyfire_filter)) {
     yy <- as.numeric(df_used[[feat]])
     xx <- as.character(df_used$Label)
 
+    box_cols <- make_palette(input$box_palette %||% "Dark2", length(unique(xx)))
+
     if (input$present_as == "Boxplot") {
       plot_ly(
         x = xx, y = yy,
-        colors = "Dark2",
+        colors = box_cols,
         type = "box",
         color = xx,
         boxpoints = FALSE,
@@ -1003,7 +1072,7 @@ if (isTRUE(input$use_classyfire_filter)) {
       plot_ly(
         x = xx, y = yy,
         text = s_names,
-        colors = "Dark2",
+        colors = box_cols,
         type = "scatter", mode = "markers",
         color = xx,
         hovertemplate = paste(

@@ -582,6 +582,32 @@ make_dark2_color_map <- function(conditions) {
   )
 }
 
+palette_choices <- c(
+  "Dark2", "Set1", "Set2", "Paired", "Accent", "Pastel1", "Pastel2",
+  "viridis", "plasma", "magma", "inferno", "cividis"
+)
+
+make_palette <- function(pal = "Dark2", n = 8) {
+  pal <- pal %||% "Dark2"
+  n <- max(1, as.integer(n))
+
+  if (pal %in% c("viridis", "plasma", "magma", "inferno", "cividis")) {
+    return(get(pal, asNamespace("viridisLite"))(n))
+  }
+
+  if (pal %in% rownames(RColorBrewer::brewer.pal.info)) {
+    maxn <- RColorBrewer::brewer.pal.info[pal, "maxcolors"]
+    base <- RColorBrewer::brewer.pal(max(3, min(maxn, n)), pal)
+
+    if (n > length(base)) {
+      base <- grDevices::colorRampPalette(base)(n)
+    }
+
+    return(base[seq_len(n)])
+  }
+
+  viridisLite::viridis(n)
+}
 
 make_autoplotter_data <- function(df_used, sample_names) {
   df_used <- as.data.frame(df_used, check.names = FALSE, stringsAsFactors = FALSE)
