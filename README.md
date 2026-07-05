@@ -5,13 +5,14 @@
 
 ### Description :bookmark_tabs:
 The [`Shiny App`](https://shiny.posit.co/) for making an enhanced interactive volcano plot for metabolomics studies.
-- Directly reads the output peak table from [`mzMine`](https://mzio.io/mzmine-news/), [`xcms`](https://www.bioconductor.org/packages/release/bioc/html/xcms.html), [`MS-DIAL`](https://systemsomicslab.github.io/compms/msdial/main.html), and Default format (see [examples of inputs](https://github.com/plyush1993/Metabocano/tree/main/toy_examples))
+- Directly reads the output peak table from [`mzMine`](https://mzio.io/mzmine-news/), [`xcms`](https://www.bioconductor.org/packages/release/bioc/html/xcms.html), [`MS-DIAL`](https://systemsomicslab.github.io/compms/msdial/main.html), and Default format (see [`examples of inputs`](https://github.com/plyush1993/Metabocano/tree/main/toy_examples))
 - Joins with the annotation table from [`SIRIUS`](https://bio.informatik.uni-jena.de/software/sirius/)
-- Performs be request the imputation by noise, and statistical tests by group pairs
+- Performs imputation by noise, and statistical tests by group pairs
 - Generates several outputs:
-  - interactive [`Plotly`](https://plotly.com/)-type volcano plot
+  - interactive [`Plotly`](https://plotly.com/)-type volcano plot with built-in filters
   - table reformatted for [`MetaboAnalyst`](https://www.metaboanalyst.ca/home.xhtml) input
-  - table with statistics and SIRIUS annotation
+  - zip archive for [`AutoPlotter`](https://mpietzke.shinyapps.io/AutoPlotter/) *Compounds in Columns* input
+  - table with statistics and [`SIRIUS`](https://bio.informatik.uni-jena.de/software/sirius/) annotation
 
 ### Launch the App :rocket:
 **Shiny deployment**<br>
