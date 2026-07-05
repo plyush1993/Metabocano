@@ -12,7 +12,7 @@ The [`Shiny App`](https://shiny.posit.co/) for making an enhanced interactive vo
   - interactive [`Plotly`](https://plotly.com/)-type volcano plot with built-in filters
   - table reformatted for [`MetaboAnalyst`](https://www.metaboanalyst.ca/home.xhtml) input
   - zip archive for [`AutoPlotter`](https://mpietzke.shinyapps.io/AutoPlotter/) *Compounds in Columns* input
-  - table with statistics and [`SIRIUS`](https://bio.informatik.uni-jena.de/software/sirius/) annotation
+  - table with statistics and [`SIRIUS`](https://bio.informatik.uni-jena.de/software/sirius/) annotation, which can be merged in [`Cytoscape`](https://cytoscape.org/)
 
 ### Launch the App :rocket:
 **Shiny deployment**<br>
