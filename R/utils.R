@@ -557,6 +557,81 @@ compute_stats_long <- function(df_used,
   dplyr::bind_rows(out_list)
 }
 
+make_safe_comparison_name <- function(x) {
+  x <- as.character(x)
+  x <- gsub("\\s*/\\s*", "_vs_", x)
+  x <- gsub("[^A-Za-z0-9]+", "_", x)
+  x <- gsub("_+", "_", x)
+  x <- gsub("^_|_$", "", x)
+  x
+}
+
+volcano_to_wide_if_needed <- function(volc) {
+  volc <- as.data.frame(volc, check.names = FALSE, stringsAsFactors = FALSE)
+
+  if (!"Groups" %in% names(volc)) {
+    return(volc)
+  }
+
+  n_comp <- length(unique(volc$Groups))
+
+  # Keep normal long format when only one comparison
+  if (n_comp <= 1) {
+    return(volc)
+  }
+
+  static_cols <- intersect(
+    c(
+      "Feature",
+      "id",
+      "mz",
+      "RT",
+      "NPC#class",
+      "ClassyFire#class"
+    ),
+    names(volc)
+  )
+
+  metric_cols <- intersect(
+    c(
+      "Group_num",
+      "Group_den",
+      "FC",
+      "Adj.p-value",
+      "Adj.p-value.log",
+      "Significant",
+      "Mean",
+      "mean_num",
+      "mean_den",
+      "TestScale"
+    ),
+    names(volc)
+  )
+
+  comp_map <- volc %>%
+    dplyr::distinct(Groups) %>%
+    dplyr::mutate(
+      comparison_name = make_safe_comparison_name(Groups)
+    )
+
+  comp_map$comparison_name <- make.unique(comp_map$comparison_name, sep = "_")
+
+  volc %>%
+    dplyr::left_join(comp_map, by = "Groups") %>%
+    dplyr::select(
+      dplyr::all_of(static_cols),
+      comparison_name,
+      dplyr::all_of(metric_cols)
+    ) %>%
+    dplyr::distinct() %>%
+    tidyr::pivot_wider(
+      id_cols = dplyr::all_of(static_cols),
+      names_from = comparison_name,
+      values_from = dplyr::all_of(metric_cols),
+      names_glue = "{.value}__{comparison_name}"
+    )
+}
+
 make_dark2_color_map <- function(conditions) {
   conditions <- unique(as.character(conditions))
   conditions <- conditions[!is.na(conditions) & nzchar(conditions)]

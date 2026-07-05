@@ -121,7 +121,7 @@ tags$head(tags$style(HTML("
 tags$head(
   tags$title("Metabocano"),
   tags$link(rel = "icon", type = "image/png",
-            href = "https://raw.githubusercontent.com/plyush1993/Metabocano/main/sticker.png")
+            href = "www/sticker.png")
 ),
 
 tags$head(
@@ -162,7 +162,7 @@ div(
   ",
 
   tags$img(
-    src = 'https://raw.githubusercontent.com/plyush1993/Metabocano/main/sticker.png',
+    src = 'www/sticker.png',
     height = '150px',
     style = 'margin-right: 20px;'
   ),
@@ -451,7 +451,7 @@ tags$hr(),
           downloadButton("dl_volcano", "Volcano table csv", class = "btn-info"),
           actionButton("btn1", "?"),
           bsTooltip("btn1",
-          title = "<b>Download table with all calculated statistical values.</b>", "right", trigger = "click", options = list(container = "body")),
+          title = "<b>Download table with all calculated statistical values. Can be merged <em>GNPS-derived .cys file</em> in Cytoscape by <em>id</em> column.</b>", "right", trigger = "click", options = list(container = "body")),
 
           tags$br(),tags$br(),
           downloadButton("dl_matrix", "MetaboAnalyst-ready csv", class = "btn-info"),
@@ -494,7 +494,15 @@ tags$hr(),
         sidebarPanel(uiOutput("volcano_sidebar")),
         mainPanel(uiOutput("volcano_main"))
       )
-    )
+    ),
+
+tabPanel("App) SIRIUS & GNPS stats", value = "sirius_gnps",
+  sidebarLayout(
+    sidebarPanel(uiOutput("sirius_gnps_sidebar")),
+    mainPanel(uiOutput("sirius_gnps_main"))
+  )
+)
+
   )
 )
 }
