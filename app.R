@@ -593,6 +593,81 @@ compute_stats_long <- function(df_used,
   dplyr::bind_rows(out_list)
 }
 
+make_safe_comparison_name <- function(x) {
+  x <- as.character(x)
+  x <- gsub("\\s*/\\s*", "_vs_", x)
+  x <- gsub("[^A-Za-z0-9]+", "_", x)
+  x <- gsub("_+", "_", x)
+  x <- gsub("^_|_$", "", x)
+  x
+}
+
+volcano_to_wide_if_needed <- function(volc) {
+  volc <- as.data.frame(volc, check.names = FALSE, stringsAsFactors = FALSE)
+
+  if (!"Groups" %in% names(volc)) {
+    return(volc)
+  }
+
+  n_comp <- length(unique(volc$Groups))
+
+  # Keep normal long format when only one comparison
+  if (n_comp <= 1) {
+    return(volc)
+  }
+
+  static_cols <- intersect(
+    c(
+      "Feature",
+      "id",
+      "mz",
+      "RT",
+      "NPC#class",
+      "ClassyFire#class"
+    ),
+    names(volc)
+  )
+
+  metric_cols <- intersect(
+    c(
+      "Group_num",
+      "Group_den",
+      "FC",
+      "Adj.p-value",
+      "Adj.p-value.log",
+      "Significant",
+      "Mean",
+      "mean_num",
+      "mean_den",
+      "TestScale"
+    ),
+    names(volc)
+  )
+
+  comp_map <- volc %>%
+    dplyr::distinct(Groups) %>%
+    dplyr::mutate(
+      comparison_name = make_safe_comparison_name(Groups)
+    )
+
+  comp_map$comparison_name <- make.unique(comp_map$comparison_name, sep = "_")
+
+  volc %>%
+    dplyr::left_join(comp_map, by = "Groups") %>%
+    dplyr::select(
+      dplyr::all_of(static_cols),
+      comparison_name,
+      dplyr::all_of(metric_cols)
+    ) %>%
+    dplyr::distinct() %>%
+    tidyr::pivot_wider(
+      id_cols = dplyr::all_of(static_cols),
+      names_from = comparison_name,
+      values_from = dplyr::all_of(metric_cols),
+      names_glue = "{.value}__{comparison_name}"
+    )
+}
+
 make_dark2_color_map <- function(conditions) {
   conditions <- unique(as.character(conditions))
   conditions <- conditions[!is.na(conditions) & nzchar(conditions)]
@@ -841,7 +916,7 @@ tags$head(tags$style(HTML("
 tags$head(
   tags$title("Metabocano"),
   tags$link(rel = "icon", type = "image/png",
-            href = "https://raw.githubusercontent.com/plyush1993/Metabocano/main/sticker.png")
+            href = "https://raw.githubusercontent.com/plyush1993/Metabocano/main/inst/www/sticker.png")
 ),
 
 tags$head(
@@ -882,7 +957,7 @@ div(
   ",
   
   tags$img(
-    src = 'https://raw.githubusercontent.com/plyush1993/Metabocano/main/sticker.png',
+    src = 'https://raw.githubusercontent.com/plyush1993/Metabocano/main/inst/www/sticker.png',
     height = '150px',
     style = 'margin-right: 20px;'
   ),
@@ -1171,7 +1246,7 @@ tags$hr(),
           downloadButton("dl_volcano", "Volcano table csv", class = "btn-info"),
           actionButton("btn1", "?"),
           bsTooltip("btn1", 
-          title = "<b>Download table with all calculated statistical values.</b>", "right", trigger = "click", options = list(container = "body")),
+          title = "<b>Download table with all calculated statistical values. Can be merged <em>GNPS-derived .cys file</em> in Cytoscape by <em>id</em> column.</b>", "right", trigger = "click", options = list(container = "body")),
 
           tags$br(),tags$br(),
           downloadButton("dl_matrix", "MetaboAnalyst-ready csv", class = "btn-info"),
@@ -1214,7 +1289,15 @@ tags$hr(),
         sidebarPanel(uiOutput("volcano_sidebar")),
         mainPanel(uiOutput("volcano_main"))
       )
-    )
+    ),
+
+tabPanel("App) SIRIUS & GNPS stats", value = "sirius_gnps",
+  sidebarLayout(
+    sidebarPanel(uiOutput("sirius_gnps_sidebar")),
+    mainPanel(uiOutput("sirius_gnps_main"))
+  )
+)
+
   )
 )
 
@@ -1662,6 +1745,456 @@ metadata_labels <- reactive({
                   choices = cols, selected = if ("ClassyFire#class" %in% cols) "ClassyFire#class" else cols[1])
     )
   })
+  
+  # ---- SIRIUS & GNPS stats tab ----
+
+guess_col_ci <- function(cols, candidates, default = NULL) {
+  if (is.null(cols) || !length(cols)) return(default)
+
+  cols_norm <- gsub("[^a-z0-9]", "", tolower(cols))
+  cand_norm <- gsub("[^a-z0-9]", "", tolower(candidates))
+
+  for (cand in cand_norm) {
+    hit <- which(cols_norm == cand)
+    if (length(hit)) return(cols[hit[1]])
+  }
+
+  for (cand in cand_norm) {
+    hit <- which(grepl(cand, cols_norm, fixed = TRUE))
+    if (length(hit)) return(cols[hit[1]])
+  }
+
+  if (!is.null(default)) default else cols[1]
+}
+
+clean_stats_value <- function(x) {
+  x <- trimws(as.character(x))
+  x[is.na(x) | !nzchar(x) | x %in% c("NA", "NaN", "null", "Not provided")] <- NA_character_
+  x
+}
+
+gnps_pairs_df <- reactive({
+  req(input$file_gnps_pairs)
+
+  ext <- tolower(tools::file_ext(input$file_gnps_pairs$name))
+
+  validate(
+    need(
+      ext %in% c("tsv", "txt", "csv"),
+      "Upload GNPS pairs as .tsv, .txt, or .csv."
+    )
+  )
+
+  delim <- if (ext == "csv") "," else "\t"
+
+  as.data.frame(
+    vroom::vroom(
+      input$file_gnps_pairs$datapath,
+      delim = delim,
+      col_names = TRUE,
+      show_col_types = FALSE
+    ),
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+})
+
+output$sirius_gnps_sidebar <- renderUI({
+  if (!isTRUE(input$use_sirius) || is.null(input$file_sirius)) {
+    return(
+      div(
+        class = "highlight",
+        "Switch on 'Join SIRIUS summary' in the Load & Process tab and upload the SIRIUS .csv file."
+      )
+    )
+  }
+
+  s <- sirius_df()
+  s_cols <- names(s)
+
+  default_id <- if (!is.null(input$sirius_idcol) && input$sirius_idcol %in% s_cols) {
+    input$sirius_idcol
+  } else {
+    guess_col_ci(
+      s_cols,
+      c("mappingFeatureId", "id", "featureId", "row ID"),
+      s_cols[1]
+    )
+  }
+
+  default_ann <- guess_col_ci(
+    s_cols,
+    c("NPC#class", "ClassyFire#class", "NPC class", "ClassyFire class", "class", "superclass"),
+    s_cols[1]
+  )
+
+  tagList(
+    h3(class = "highlight", "SIRIUS annotation frequency"),
+
+    selectInput(
+      "stats_sirius_id_col",
+      "SIRIUS ID column:",
+      choices = s_cols,
+      selected = default_id
+    ),
+
+    selectInput(
+      "stats_sirius_col",
+      "SIRIUS column for frequency statistics:",
+      choices = s_cols,
+      selected = default_ann
+    ),
+
+    uiOutput("stats_class_picker"),
+
+    tags$hr(),
+
+    h3(class = "highlight", "Optional GNPS network pairs"),
+
+    fileInput(
+      "file_gnps_pairs",
+      "Upload GNPS Pairs List file (.tsv/.txt/.csv)",
+      accept = c(".tsv", ".txt", ".csv")
+    ),
+
+    uiOutput("gnps_pickers_ui"),
+
+    div(
+      class = "small-note",
+      "GNPS pairs are converted from ClusterID1/ClusterID2 into one ClusterID column. By default, no peak-table pruning is applied. If a peak-table ID column is selected, SIRIUS IDs and GNPS ClusterIDs are restricted to IDs present in the uploaded peak table."
+    )
+  )
+})
+
+output$gnps_pickers_ui <- renderUI({
+  req(gnps_pairs_df())
+
+  g_cols <- names(gnps_pairs_df())
+
+  raw_cols <- tryCatch(names(raw_df()), error = function(e) character(0))
+
+  default_peak <- if (!is.null(input$row_id_col) && input$row_id_col %in% raw_cols) {
+    input$row_id_col
+  } else {
+    guess_col_ci(
+      raw_cols,
+      c("row ID", "row id", "id", "feature_id"),
+      default = "__none__"
+    )
+  }
+
+  tagList(
+    selectInput(
+      "gnps_cluster1_col",
+      "GNPS ClusterID1 column:",
+      choices = g_cols,
+      selected = guess_col_ci(g_cols, c("ClusterID1", "CLUSTERID1"), g_cols[1])
+    ),
+
+    selectInput(
+      "gnps_cluster2_col",
+      "GNPS ClusterID2 column:",
+      choices = g_cols,
+      selected = guess_col_ci(g_cols, c("ClusterID2", "CLUSTERID2"), g_cols[min(2, length(g_cols))])
+    ),
+
+    selectInput(
+      "gnps_component_col",
+      "GNPS ComponentIndex column:",
+      choices = g_cols,
+      selected = guess_col_ci(g_cols, c("ComponentIndex", "component"), g_cols[1])
+    ),
+
+    selectInput(
+      "gnps_peak_id_col",
+      "Optional peak-table pruning by Peak ID:",
+      choices = c("Do not use peak-table ID matching" = "__none__", raw_cols),
+      selected = "__none__"
+    )
+  )
+})
+
+sirius_stats_data <- reactive({
+  req(sirius_df(), input$stats_sirius_id_col, input$stats_sirius_col)
+
+  s <- as.data.frame(
+    sirius_df(),
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+
+  validate(
+    need(input$stats_sirius_id_col %in% names(s), "Selected SIRIUS ID column was not found."),
+    need(input$stats_sirius_col %in% names(s), "Selected SIRIUS statistics column was not found.")
+  )
+
+  out <- tibble::tibble(
+    SIRIUS_ID = trimws(as.character(s[[input$stats_sirius_id_col]])),
+    Annotation = clean_stats_value(s[[input$stats_sirius_col]])
+  ) %>%
+    dplyr::filter(nzchar(SIRIUS_ID), !is.na(Annotation))
+
+  keep_ids <- selected_peak_ids_for_gnps()
+
+  if (!is.null(keep_ids) && length(keep_ids)) {
+    out <- out %>%
+      dplyr::filter(SIRIUS_ID %in% keep_ids)
+  }
+
+  out
+})
+
+output$stats_class_picker <- renderUI({
+  req(sirius_stats_data())
+
+  vals <- sirius_stats_data() %>%
+    dplyr::count(Annotation, sort = TRUE, name = "Frequency") %>%
+    dplyr::pull(Annotation)
+
+  if (!length(vals)) {
+    return(
+      div(
+        class = "small-note",
+        "No non-empty values detected for the selected SIRIUS column."
+      )
+    )
+  }
+
+  pickerInput(
+    "stats_selected_class",
+    "Specific class/value for GNPS ComponentIndex statistics:",
+    choices = vals,
+    selected = vals[1],
+    multiple = FALSE,
+    options = list(
+      `live-search` = TRUE,
+      `style` = "btn-success"
+    )
+  )
+})
+
+sirius_frequency_table <- reactive({
+  req(sirius_stats_data())
+
+  n_total <- nrow(sirius_stats_data())
+
+  sirius_stats_data() %>%
+    dplyr::group_by(Annotation) %>%
+    dplyr::summarise(
+      Frequency = dplyr::n(),
+      Unique_IDs = dplyr::n_distinct(SIRIUS_ID),
+      Percent = round(100 * Frequency / n_total, 2),
+      .groups = "drop"
+    ) %>%
+    dplyr::arrange(dplyr::desc(Frequency), Annotation)
+})
+
+output$sirius_frequency_table <- DT::renderDT({
+  datatable(
+    sirius_frequency_table(),
+    rownames = FALSE,
+    class = "compact stripe hover nowrap",
+    options = list(
+      pageLength = 15,
+      scrollX = TRUE,
+      order = list(list(1, "desc"))
+    )
+  )
+})
+
+selected_peak_ids_for_gnps <- reactive({
+  if (is.null(input$gnps_peak_id_col) || identical(input$gnps_peak_id_col, "__none__")) {
+    return(NULL)
+  }
+
+  req(raw_df())
+
+  raw <- as.data.frame(
+    raw_df(),
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+
+  validate(
+    need(input$gnps_peak_id_col %in% names(raw), "Selected peak-table ID column was not found.")
+  )
+
+  ids <- trimws(as.character(raw[[input$gnps_peak_id_col]]))
+  ids[nzchar(ids)]
+})
+
+gnps_component_map <- reactive({
+  req(
+    gnps_pairs_df(),
+    input$gnps_cluster1_col,
+    input$gnps_cluster2_col,
+    input$gnps_component_col
+  )
+
+  g <- as.data.frame(
+    gnps_pairs_df(),
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+
+  validate(
+    need(input$gnps_cluster1_col %in% names(g), "GNPS ClusterID1 column was not found."),
+    need(input$gnps_cluster2_col %in% names(g), "GNPS ClusterID2 column was not found."),
+    need(input$gnps_component_col %in% names(g), "GNPS ComponentIndex column was not found.")
+  )
+
+  out <- g %>%
+    dplyr::transmute(
+      ComponentIndex = as.character(.data[[input$gnps_component_col]]),
+      ClusterID1 = as.character(.data[[input$gnps_cluster1_col]]),
+      ClusterID2 = as.character(.data[[input$gnps_cluster2_col]])
+    ) %>%
+    tidyr::pivot_longer(
+      cols = c("ClusterID1", "ClusterID2"),
+      names_to = "Cluster_side",
+      values_to = "ClusterID"
+    ) %>%
+    dplyr::mutate(
+      ClusterID = trimws(as.character(ClusterID)),
+      ComponentIndex = trimws(as.character(ComponentIndex))
+    ) %>%
+    dplyr::filter(nzchar(ClusterID), nzchar(ComponentIndex)) %>%
+    dplyr::distinct(ComponentIndex, ClusterID)
+
+  keep_ids <- selected_peak_ids_for_gnps()
+
+  if (!is.null(keep_ids) && length(keep_ids)) {
+    out <- out %>%
+      dplyr::filter(ClusterID %in% keep_ids)
+  }
+
+  out
+})
+
+selected_class_component_stats <- reactive({
+  req(sirius_stats_data(), input$stats_selected_class)
+
+  ids <- sirius_stats_data() %>%
+    dplyr::filter(Annotation == input$stats_selected_class) %>%
+    dplyr::distinct(SIRIUS_ID)
+
+  if (!nrow(ids)) {
+    return(
+      tibble::tibble(
+        ComponentIndex = character(),
+        Points = integer(),
+        ClusterIDs = character()
+      )
+    )
+  }
+
+  if (is.null(input$file_gnps_pairs)) {
+    return(
+      tibble::tibble(
+        ComponentIndex = "GNPS pairs not uploaded",
+        Points = dplyr::n_distinct(ids$SIRIUS_ID),
+        ClusterIDs = paste(sort(unique(ids$SIRIUS_ID)), collapse = ", ")
+      )
+    )
+  }
+
+  comp <- gnps_component_map()
+
+  ids %>%
+    dplyr::left_join(comp, by = c("SIRIUS_ID" = "ClusterID")) %>%
+    dplyr::mutate(
+      ComponentIndex = dplyr::if_else(
+        is.na(ComponentIndex) | !nzchar(ComponentIndex),
+        "No ComponentIndex match",
+        ComponentIndex
+      )
+    ) %>%
+    dplyr::group_by(ComponentIndex) %>%
+    dplyr::summarise(
+      Points = dplyr::n_distinct(SIRIUS_ID),
+      ClusterIDs = paste(sort(unique(SIRIUS_ID)), collapse = ", "),
+      .groups = "drop"
+    ) %>%
+    dplyr::arrange(dplyr::desc(Points), ComponentIndex)
+})
+
+output$selected_class_summary <- renderUI({
+  req(sirius_stats_data(), input$stats_selected_class)
+
+  ids_all <- sirius_stats_data() %>%
+    dplyr::filter(Annotation == input$stats_selected_class) %>%
+    dplyr::distinct(SIRIUS_ID)
+
+  comp_stats <- selected_class_component_stats()
+
+  mapped <- if (!is.null(input$file_gnps_pairs)) {
+    sum(comp_stats$Points[comp_stats$ComponentIndex != "No ComponentIndex match"], na.rm = TRUE)
+  } else {
+    NA_integer_
+  }
+
+  div(
+    style = "
+      background:#ffffffcc;
+      padding:10px;
+      border-radius:10px;
+      border:1px solid #ddd;
+      margin-bottom:10px;
+    ",
+    h4("Selected class summary"),
+    tags$ul(
+      tags$li(strong("Column: "), input$stats_sirius_col),
+      tags$li(strong("Selected value: "), input$stats_selected_class),
+      tags$li(strong("Unique SIRIUS IDs / points: "), dplyr::n_distinct(ids_all$SIRIUS_ID)),
+      tags$li(
+        strong("SIRIUS entries: "),
+        nrow(
+          sirius_stats_data() %>%
+            dplyr::filter(Annotation == input$stats_selected_class)
+        )
+      ),
+      if (!is.na(mapped)) {
+        tags$li(strong("Points with ComponentIndex match: "), mapped)
+      },
+      if (!is.null(input$file_gnps_pairs)) {
+        tags$li(strong("Number of ComponentIndex groups shown: "), nrow(comp_stats))
+      }
+    )
+  )
+})
+
+output$selected_class_component_table <- DT::renderDT({
+  datatable(
+    selected_class_component_stats(),
+    rownames = FALSE,
+    class = "compact stripe hover nowrap",
+    options = list(
+      pageLength = 15,
+      scrollX = TRUE,
+      order = list(list(1, "desc"))
+    )
+  )
+})
+
+output$sirius_gnps_main <- renderUI({
+  if (!isTRUE(input$use_sirius) || is.null(input$file_sirius)) {
+    return(
+      div(
+        class = "highlight",
+        "No SIRIUS annotation table uploaded yet. Go to Load & Process -> Join with Annotation -> upload SIRIUS summary."
+      )
+    )
+  }
+
+  tagList(
+    h3("Frequency by selected SIRIUS column"),
+    withSpinner(DTOutput("sirius_frequency_table"), type = 8, color = "#66CDAA"),
+    tags$hr(),
+    uiOutput("selected_class_summary"),
+    h3("Selected class distribution by GNPS ComponentIndex"),
+    withSpinner(DTOutput("selected_class_component_table"), type = 8, color = "#66CDAA")
+  )
+})
 
   # ---- Process button ----
   observeEvent(input$run_proc, {
@@ -2296,14 +2829,23 @@ if (isTRUE(input$use_classyfire_filter)) {
   })
 
   # ---- Downloads
-  output$dl_volcano <- downloadHandler(
+ output$dl_volcano <- downloadHandler(
   filename = function() {
-    paste0(dataset_name(), "_volcano_table.csv")
+    req(rv$volcano)
+
+    n_comp <- length(unique(rv$volcano$Groups))
+
+    if (n_comp > 1) {
+      paste0(dataset_name(), "_volcano_table_wide.csv")
+    } else {
+      paste0(dataset_name(), "_volcano_table.csv")
+    }
   },
+
   content = function(file) {
     req(rv$volcano)
 
-    out <- as.data.frame(rv$volcano, check.names = FALSE, stringsAsFactors = FALSE)
+    out <- volcano_to_wide_if_needed(rv$volcano)
 
     data.table::fwrite(out, file, na = "")
   }
