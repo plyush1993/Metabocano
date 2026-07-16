@@ -1060,7 +1060,7 @@ radioButtons(
   "label_source",
   "Label source:",
   choices = c(
-    "From sample names (token)" = "token",
+    "From sample names (by token)" = "token",
     "From metadata CSV (match by sample name)" = "metadata",
     "From uploaded labels CSV (1 column, no header)" = "csv",
     "Manual editable table" = "manual"
@@ -1071,8 +1071,7 @@ radioButtons(
 conditionalPanel(
   condition = "input.label_source == 'token' || input.label_source == 'manual'",
   textInput("token_sep", "Token separator", value = "_"),
-  numericInput("token_index", "Token index (1-based)", value = 2, min = 1, step = 1),
-  checkboxInput("clean_sample_names", "Clean sample names (remove extension/Peak area)", TRUE)
+  numericInput("token_index", "Token index (1-based)", value = 2, min = 1, step = 1)
 ),
 
 conditionalPanel(
@@ -1090,7 +1089,7 @@ conditionalPanel(
   checkboxInput(
     "metadata_clean_sample_names",
     "Clean sample names only for metadata matching",
-    value = FALSE
+    value = TRUE
   ),
 
   conditionalPanel(
@@ -1274,6 +1273,7 @@ tags$hr(),
           DTOutput("raw_preview"),
           tags$hr(),
           uiOutput("labels_header"),
+          uiOutput("label_upload_warning"),
           conditionalPanel(
   condition = "input.show_labels_table || input.label_source == 'manual'",
   DTOutput("labels_table")
@@ -1305,6 +1305,35 @@ tabPanel("App) SIRIUS & GNPS stats", value = "sirius_gnps",
 
 server <- function(input, output, session) {
 
+  output$label_upload_warning <- renderUI({
+  src <- input$label_source %||% "token"
+
+  need_file <- FALSE
+
+  if (identical(src, "csv") && is.null(input$file_labels)) {
+    need_file <- TRUE
+  }
+
+  if (identical(src, "metadata") && is.null(input$file_metadata_labels)) {
+    need_file <- TRUE
+  }
+
+  if (!need_file) return(NULL)
+
+  div(
+    class = "alert alert-warning",
+    style = "
+      margin-top: 10px;
+      margin-bottom: 12px;
+      font-size: 16px;
+      font-weight: 700;
+      border: 2px solid #f0ad4e;
+      border-radius: 8px;
+    ",
+    "Please upload a CSV file first!"
+  )
+})
+  
   session$onFlushed(function() {
     shinyjs::disable("run_proc")
     shinyjs::disable("dl_volcano")
@@ -1349,8 +1378,7 @@ server <- function(input, output, session) {
     input$metadata_clean_sample_names,
     input$metadata_remove_suffixes,
     input$token_sep,
-    input$token_index,
-    input$clean_sample_names
+    input$token_index
   ),
   {
     rv$labels <- NULL
@@ -1485,7 +1513,7 @@ auto_label_table <- reactive({
       sample_names(),
       token_sep = input$token_sep %||% "_",
       token_index = input$token_index %||% 2,
-      clean_names = isTRUE(input$clean_sample_names)
+      clean_names = FALSE
     )
   )
 })
@@ -1655,7 +1683,7 @@ metadata_labels <- reactive({
   } else {
 
     sn <- sample_names()
-    sn2 <- if (isTRUE(input$clean_sample_names)) clean_sample_names(sn) else sn
+    sn2 <- sn
     sep <- input$token_sep %||% "_"
     idx <- as.integer(input$token_index %||% 2)
 
@@ -2508,34 +2536,44 @@ selectInput(
   })
 
   output$volcano_sliders <- renderUI({
-    req(procReady())
-    dd <- rv$volcano
+  req(procReady())
+  dd <- rv$volcano
 
-    mzr <- finite_range(dd$mz)
-    rtr <- finite_range(dd$RT)
-    mr  <- finite_range(log10(dd$Mean+ 1.1))
-    fcmax <- max(abs(dd$FC), na.rm = TRUE)
-    yMax <- max(dd$`Adj.p-value.log`, na.rm = TRUE)
+  mzr <- finite_range(dd$mz)
+  rtr <- finite_range(dd$RT)
+  mr  <- finite_range(log10(dd$Mean + 1.1))
+  fcmax <- max(abs(dd$FC), na.rm = TRUE)
 
-    validate(need(!is.null(mzr) && !is.null(rtr) && !is.null(mr),
-                  "No finite mz/RT/Mean values available for sliders."))
+  validate(need(!is.null(mzr) && !is.null(rtr) && !is.null(mr),
+                "No finite mz/RT/Mean values available for sliders."))
 
-    tagList(
-      sliderInput("mz_range", "m/z:",
-                  min = round(min(dd$mz, na.rm = TRUE), 3),
-                  max = round(max(dd$mz, na.rm = TRUE), 3),
-                  value = round(range(dd$mz, na.rm = TRUE), 3),
-                  step = 0.1),
-      sliderInput("rt_range", "RT:",
-                  min = round(min(dd$RT, na.rm = TRUE), 1),
-                  max = round(max(dd$RT, na.rm = TRUE), 1),
-                  value = round(range(dd$RT, na.rm = TRUE),1),
-                  step = 0.1),
-      sliderInput("intensity_range", "Mean log10(Intensity):",
-                  min = round(log10(min(dd$Mean+1.1, na.rm = TRUE)),1),
-                  max = round(log10(max(dd$Mean+1.1, na.rm = TRUE)),1),
-                  value = round(log10(range(dd$Mean+1.1, na.rm = TRUE)),1),
-                  step = 0.1),
+  mz_min <- floor(mzr[1] * 10000) / 10000
+  mz_max <- ceiling(mzr[2] * 10000) / 10000
+
+  rt_min <- floor(rtr[1] * 1000) / 1000
+  rt_max <- ceiling(rtr[2] * 1000) / 1000
+
+  int_min <- floor(mr[1] * 1000) / 1000
+  int_max <- ceiling(mr[2] * 1000) / 1000
+
+  tagList(
+    sliderInput("mz_range", "m/z:",
+                min = mz_min,
+                max = mz_max,
+                value = c(mz_min, mz_max),
+                step = 0.0001),
+
+    sliderInput("rt_range", "RT:",
+                min = rt_min,
+                max = rt_max,
+                value = c(rt_min, rt_max),
+                step = 0.001),
+
+    sliderInput("intensity_range", "Mean log10(Intensity):",
+                min = int_min,
+                max = int_max,
+                value = c(int_min, int_max),
+                step = 0.001),
       
           tags$hr(),
 
