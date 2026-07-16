@@ -265,7 +265,7 @@ radioButtons(
   "label_source",
   "Label source:",
   choices = c(
-    "From sample names (token)" = "token",
+    "From sample names (by token)" = "token",
     "From metadata CSV (match by sample name)" = "metadata",
     "From uploaded labels CSV (1 column, no header)" = "csv",
     "Manual editable table" = "manual"
@@ -276,8 +276,7 @@ radioButtons(
 conditionalPanel(
   condition = "input.label_source == 'token' || input.label_source == 'manual'",
   textInput("token_sep", "Token separator", value = "_"),
-  numericInput("token_index", "Token index (1-based)", value = 2, min = 1, step = 1),
-  checkboxInput("clean_sample_names", "Clean sample names (remove extension/Peak area)", TRUE)
+  numericInput("token_index", "Token index (1-based)", value = 2, min = 1, step = 1)
 ),
 
 conditionalPanel(
@@ -295,7 +294,7 @@ conditionalPanel(
   checkboxInput(
     "metadata_clean_sample_names",
     "Clean sample names only for metadata matching",
-    value = FALSE
+    value = TRUE
   ),
 
   conditionalPanel(
@@ -479,6 +478,7 @@ tags$hr(),
           DTOutput("raw_preview"),
           tags$hr(),
           uiOutput("labels_header"),
+          uiOutput("label_upload_warning"),
           conditionalPanel(
   condition = "input.show_labels_table || input.label_source == 'manual'",
   DTOutput("labels_table")
