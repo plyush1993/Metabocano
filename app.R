@@ -2368,9 +2368,35 @@ output$sirius_gnps_main <- renderUI({
       rtr <- finite_range(dd$RT)
       mr  <- finite_range(log10(dd$Mean + 1.1))
     
-      if (!is.null(mzr)) updateSliderInput(session, "mz_range", value = c(mzr[1], mzr[2]))
-      if (!is.null(rtr)) updateSliderInput(session, "rt_range", value = c(rtr[1], rtr[2]))
-      if (!is.null(mr))  updateSliderInput(session, "intensity_range", value = c(round(mr[1], 1), round(mr[2], 1)))
+      if (!is.null(mzr)) {
+        updateSliderInput(
+          session, "mz_range",
+          value = c(
+            floor(mzr[1] * 10000) / 10000,
+            ceiling(mzr[2] * 10000) / 10000
+          )
+        )
+      }
+      
+      if (!is.null(rtr)) {
+        updateSliderInput(
+          session, "rt_range",
+          value = c(
+            floor(rtr[1] * 1000) / 1000,
+            ceiling(rtr[2] * 1000) / 1000
+          )
+        )
+      }
+      
+      if (!is.null(mr)) {
+        updateSliderInput(
+          session, "intensity_range",
+          value = c(
+            floor(mr[1] * 1000) / 1000,
+            ceiling(mr[2] * 1000) / 1000
+          )
+        )
+      }
     
       updateNumericInput(session, "sig_p_cutoff", value = 0.05)
       updateSliderInput(session, "fc_thr", value = 1)
