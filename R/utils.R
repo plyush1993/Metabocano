@@ -435,13 +435,16 @@ impute_lod_random <- function(X,
 
 compute_stats_long <- function(df_used,
                                test = c("Student", "Wilcoxon", "limma"),
-                               adj  = c("BH","holm","hochberg","hommel","bonferroni","BY","fdr","none"),
+                               adj  = c(
+                                 "BH", "holm", "hochberg", "hommel",
+                                 "bonferroni", "BY", "fdr", "none"),
                                paired = FALSE,
-                               eqvar  = FALSE,
+                               eqvar = FALSE,
                                pseudocount = 1.1,
                                log2_test = FALSE,
                                scale_data = FALSE,
-                               ref_group = NULL) {
+                               ref_group = NULL,
+                               comparisons = NULL) {
   test <- match.arg(test)
   adj  <- match.arg(adj)
 
@@ -454,14 +457,62 @@ compute_stats_long <- function(df_used,
   lev <- levels(gr)
   validate(need(length(lev) >= 2, "Need at least 2 Label groups to run statistics."))
 
-  if (!is.null(ref_group) && ref_group %in% lev) {
-    others <- setdiff(lev, ref_group)
-    # Each row: [Control, Treatment]
-    comb <- cbind(rep(ref_group, length(others)), others)
-  } else {
-    # Fallback to all pairs if no ref selected
-    comb <- t(utils::combn(lev, 2))
-  }
+  if (!is.null(comparisons)) {
+
+  comparisons <- as.data.frame(
+    comparisons,
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+
+  validate(
+    need(
+      all(c("Group_num", "Group_den") %in% names(comparisons)),
+      paste0(
+        "Manual comparisons must contain ",
+        "Group_num and Group_den columns."
+      )
+    )
+  )
+
+  comparisons <- comparisons %>%
+    dplyr::transmute(
+      Group_num = trimws(as.character(Group_num)),
+      Group_den = trimws(as.character(Group_den))
+    ) %>%
+    dplyr::filter(
+      Group_num %in% lev,
+      Group_den %in% lev,
+      Group_num != Group_den
+    ) %>%
+    dplyr::distinct()
+
+  validate(
+    need(
+      nrow(comparisons) > 0,
+      "Select at least one valid manual comparison."
+    )
+  )
+
+  comb <- as.matrix(
+    comparisons[, c("Group_num", "Group_den"), drop = FALSE]
+  )
+
+} else if (!is.null(ref_group) && ref_group %in% lev) {
+
+  others <- setdiff(lev, ref_group)
+
+  # First group / second group
+  comb <- cbind(
+    rep(ref_group, length(others)),
+    others
+  )
+
+} else {
+
+  # Fallback when neither method is supplied
+  comb <- t(utils::combn(lev, 2))
+}
 
   out_list <- vector("list", nrow(comb))
 
@@ -557,26 +608,15 @@ compute_stats_long <- function(df_used,
   dplyr::bind_rows(out_list)
 }
 
-make_safe_comparison_name <- function(x) {
-  x <- as.character(x)
-  x <- gsub("\\s*/\\s*", "_vs_", x)
-  x <- gsub("[^A-Za-z0-9]+", "_", x)
-  x <- gsub("_+", "_", x)
-  x <- gsub("^_|_$", "", x)
-  x
-}
-
 volcano_to_wide_if_needed <- function(volc) {
-  volc <- as.data.frame(volc, check.names = FALSE, stringsAsFactors = FALSE)
 
-  if (!"Groups" %in% names(volc)) {
-    return(volc)
-  }
+  volc <- as.data.frame(
+    volc,
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
 
-  n_comp <- length(unique(volc$Groups))
-
-  # Keep normal long format when only one comparison
-  if (n_comp <= 1) {
+  if (!"Groups" %in% names(volc) || nrow(volc) == 0) {
     return(volc)
   }
 
@@ -592,44 +632,88 @@ volcano_to_wide_if_needed <- function(volc) {
     names(volc)
   )
 
-  metric_cols <- intersect(
-    c(
-      "Group_num",
-      "Group_den",
-      "FC",
-      "Adj.p-value",
-      "Adj.p-value.log",
-      "Significant",
-      "Mean",
-      "mean_num",
-      "mean_den",
-      "TestScale"
-    ),
-    names(volc)
-  )
+  n_comp <- dplyr::n_distinct(volc$Groups)
 
-  comp_map <- volc %>%
-    dplyr::distinct(Groups) %>%
-    dplyr::mutate(
-      comparison_name = make_safe_comparison_name(Groups)
+  if (n_comp == 1) {
+
+  group_num_name <- unique(as.character(volc$Group_num))
+  group_den_name <- unique(as.character(volc$Group_den))
+
+  if (
+    length(group_num_name) == 1 &&
+    length(group_den_name) == 1
+  ) {
+    names(volc)[names(volc) == "mean_num"] <-
+      paste0("Mean_", group_num_name)
+
+    names(volc)[names(volc) == "mean_den"] <-
+      paste0("Mean_", group_den_name)
+  }
+
+  # These columns are not needed in the exported volcano table
+  volc <- volc %>%
+    dplyr::select(
+      -dplyr::any_of(c("Mean", "TestScale",  "Adj.p-value.log"))
     )
 
-  comp_map$comparison_name <- make.unique(comp_map$comparison_name, sep = "_")
+  return(volc)
+}
 
-  volc %>%
-    dplyr::left_join(comp_map, by = "Groups") %>%
+  comparison_metrics <- intersect(
+  c(
+    "FC",
+    "Adj.p-value",
+    "Significant"
+  ),
+  names(volc)
+)
+
+  comparison_wide <- volc %>%
     dplyr::select(
       dplyr::all_of(static_cols),
-      comparison_name,
-      dplyr::all_of(metric_cols)
+      Groups,
+      dplyr::all_of(comparison_metrics)
     ) %>%
     dplyr::distinct() %>%
     tidyr::pivot_wider(
       id_cols = dplyr::all_of(static_cols),
-      names_from = comparison_name,
-      values_from = dplyr::all_of(metric_cols),
-      names_glue = "{.value}__{comparison_name}"
+      names_from = Groups,
+      values_from = dplyr::all_of(comparison_metrics),
+      names_glue = "{.value}__{Groups}",
+      names_repair = "minimal"
     )
+
+  group_means <- dplyr::bind_rows(
+
+    volc %>%
+      dplyr::transmute(
+        dplyr::across(dplyr::all_of(static_cols)),
+        group_name = as.character(Group_num),
+        group_mean = as.numeric(mean_num)
+      ),
+
+    volc %>%
+      dplyr::transmute(
+        dplyr::across(dplyr::all_of(static_cols)),
+        group_name = as.character(Group_den),
+        group_mean = as.numeric(mean_den)
+      )
+
+  ) %>%
+    dplyr::distinct() %>%
+    tidyr::pivot_wider(
+      id_cols = dplyr::all_of(static_cols),
+      names_from = group_name,
+      values_from = group_mean,
+      names_glue = "Mean_{group_name}",
+      names_repair = "minimal"
+    )
+
+  dplyr::left_join(
+    comparison_wide,
+    group_means,
+    by = static_cols
+  )
 }
 
 make_dark2_color_map <- function(conditions) {

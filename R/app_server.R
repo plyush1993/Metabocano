@@ -459,11 +459,160 @@ metadata_labels <- reactive({
   )
 }, server = FALSE)
 
-  output$ref_group_picker <- renderUI({
+  comparison_pairs <- reactive({
   req(labels_vec())
-  levs <- sort(unique(labels_vec()))
-  selectInput("ref_group", "Reference Group:", choices = levs)
-  })
+
+  levs <- sort(
+    unique(
+      trimws(as.character(labels_vec()))
+    )
+  )
+
+  levs <- levs[nzchar(levs)]
+
+  validate(
+    need(
+      length(levs) >= 2,
+      "Need at least 2 groups to define comparisons."
+    )
+  )
+
+  # All directional comparisons:
+  # A / B and B / A are separate options
+  tidyr::expand_grid(
+    Group_num = levs,
+    Group_den = levs
+  ) %>%
+    dplyr::filter(Group_num != Group_den) %>%
+    dplyr::mutate(
+      Comparison_ID = sprintf(
+        "comparison_%04d",
+        dplyr::row_number()
+      ),
+      Comparison = paste0(
+        Group_num,
+        " / ",
+        Group_den
+      )
+    ) %>%
+    dplyr::select(
+      Comparison_ID,
+      Comparison,
+      Group_num,
+      Group_den
+    )
+})
+
+
+output$comparison_picker <- renderUI({
+  req(labels_vec())
+
+  levs <- sort(
+    unique(
+      trimws(as.character(labels_vec()))
+    )
+  )
+
+  pairs <- comparison_pairs()
+
+  # Preserve the currently selected reference group
+  old_ref <- isolate(input$ref_group)
+
+  if (is.null(old_ref) || !old_ref %in% levs) {
+    old_ref <- levs[1]
+  }
+
+  # Preserve valid manual choices when UI is rebuilt
+  old_manual <- isolate(
+    input$manual_comparisons
+  ) %||% character(0)
+
+  old_manual <- intersect(
+    old_manual,
+    pairs$Comparison_ID
+  )
+
+  tagList(
+
+    conditionalPanel(
+      condition = "input.comparison_mode == 'reference'",
+
+      selectInput(
+        "ref_group",
+        "Reference Group:",
+        choices = levs,
+        selected = old_ref
+      )
+    ),
+
+    conditionalPanel(
+      condition = "input.comparison_mode == 'manual'",
+
+      pickerInput(
+        inputId = "manual_comparisons",
+        label = "Select comparisons:",
+        choices = stats::setNames(
+          pairs$Comparison_ID,
+          pairs$Comparison
+        ),
+        selected = old_manual,
+        multiple = TRUE,
+        options = list(
+          `actions-box` = TRUE,
+          `live-search` = TRUE,
+          `none-selected-text` =
+            "Select one or more comparisons",
+          `selected-text-format` = "count > 2",
+          `count-selected-text` =
+            "{0} comparison(s) selected",
+          `style` = "btn-success"
+        )
+      )
+    )
+  )
+})
+
+selected_manual_comparisons <- reactive({
+  req(
+    identical(
+      input$comparison_mode %||% "reference",
+      "manual"
+    )
+  )
+
+  selected_ids <- input$manual_comparisons %||%
+    character(0)
+
+  validate(
+    need(
+      length(selected_ids) > 0,
+      "Select at least one manual comparison."
+    )
+  )
+
+  pairs <- comparison_pairs()
+
+  selected_rows <- match(
+    selected_ids,
+    pairs$Comparison_ID
+  )
+
+  validate(
+    need(
+      !any(is.na(selected_rows)),
+      paste0(
+        "One or more selected comparisons ",
+        "are no longer available."
+      )
+    )
+  )
+
+  pairs[
+    selected_rows,
+    c("Group_num", "Group_den"),
+    drop = FALSE
+  ]
+})
 
   # ---- SIRIUS pickers ----
   sirius_df <- reactive({
@@ -939,10 +1088,30 @@ output$sirius_gnps_main <- renderUI({
 
   # ---- Process button ----
   observeEvent(input$run_proc, {
-    req(built(), labels_vec())
-    labs_pre <- labels_vec()
-    if (stop_if_one_group(labs_pre)) return(NULL)
-    withProgress(message = "Processing...", value = 0, {
+  req(built(), labels_vec())
+  labs_pre <- labels_vec()
+  if (stop_if_one_group(labs_pre)) {
+    return(NULL)
+  }
+  comparison_mode <- input$comparison_mode %||% "reference"
+  manual_pairs <- NULL
+  if (identical(comparison_mode, "manual")) {
+    if (
+      is.null(input$manual_comparisons) ||
+      length(input$manual_comparisons) == 0
+    ) {
+      showNotification(
+        "Select at least one manual comparison.",
+        type = "error",
+        duration = 6
+      )
+      return(NULL)
+    }
+    manual_pairs <- selected_manual_comparisons()
+  } else {
+    req(input$ref_group)
+  }
+  withProgress(message = "Processing...", value = 0, {
       incProgress(0.15, detail = "Building matrix")
       X <- built()$mat
       fmap <- built()$fmap
@@ -975,15 +1144,24 @@ output$sirius_gnps_main <- renderUI({
 
       incProgress(0.30, detail = "Running...")
       volc <- compute_stats_long(
-      df_used,
-      test = input$test_type %||% "Student",
-      adj  = input$p_adjust %||% "BH",
-      paired = isTRUE(input$paired),
-      eqvar  = isTRUE(input$eqvar),
-      pseudocount = 1.1,
-      log2_test = isTRUE(input$log2_test),
-      scale_data = isTRUE(input$standard_scaling),
-      ref_group = input$ref_group
+        df_used,
+        test = input$test_type %||% "Student",
+        adj = input$p_adjust %||% "BH",
+        paired = isTRUE(input$paired),
+        eqvar = isTRUE(input$eqvar),
+        pseudocount = 1.1,
+        log2_test = isTRUE(input$log2_test),
+        scale_data = isTRUE(input$standard_scaling),
+
+        ref_group = if (
+          identical(comparison_mode, "reference")
+        ) {
+          input$ref_group
+        } else {
+          NULL
+        },
+
+        comparisons = manual_pairs
       )
 
       incProgress(0.05, detail = "Joining mz/rt/id")

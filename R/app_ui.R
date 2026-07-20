@@ -421,8 +421,14 @@ tags$hr(),
 
           tags$hr(),
           h3(class = "highlight", "Statistics"),
-          uiOutput("ref_group_picker"),
-          selectInput("test_type", "Test:", c("Student", "Wilcoxon", "limma (Moderated t-test)" = "limma"), selected = "Student"),
+          radioButtons("comparison_mode", "Comparison selection:",
+            choices = c(
+              "Reference group vs all others" = "reference",
+              "Choose comparisons manually" = "manual"), selected = "reference"),
+          uiOutput("comparison_picker"),
+          selectInput(
+            "test_type", "Test:",
+            c("Student", "Wilcoxon", "limma (Moderated t-test)" = "limma"), selected = "Student"),
           selectInput("p_adjust", "p-adjust:", c("BH","holm","hochberg","hommel","bonferroni","BY","fdr","none"), selected = "BH"),
           conditionalPanel(
             condition = "input.test_type == 'Student' || input.test_type == 'Wilcoxon'",
