@@ -10,7 +10,7 @@ The [`Shiny App`](https://shiny.posit.co/) for making an enhanced interactive vo
 - Intersects peak table with the annotation table from [`SIRIUS`](https://bio.informatik.uni-jena.de/software/sirius/), and Pairs List from [`GNPS`](https://gnps2.org/homepage)
 - Performs imputation by noise, and statistical tests by group pairs
 - Generates several outputs:
-  - interactive [`Plotly`](https://plotly.com/)-type volcano plot with built-in filters
+  - interactive [`Plotly`](https://plotly.com/)-type volcano plot with built-in filters, sliders, and formatting
   - table reformatted for [`MetaboAnalyst`](https://www.metaboanalyst.ca/home.xhtml) input
   - zip archive for [`AutoPlotter`](https://mpietzke.shinyapps.io/AutoPlotter/) *Compounds in Columns* input
   - table with statistics and [`SIRIUS`](https://bio.informatik.uni-jena.de/software/sirius/) annotation, which can be merged in [`Cytoscape`](https://cytoscape.org/)
