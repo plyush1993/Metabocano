@@ -1250,6 +1250,7 @@ output$sirius_gnps_main <- renderUI({
       updatePickerInput(session, "npc_filter_values", selected = character(0))
       updatePickerInput(session, "classyfire_filter_values", selected = character(0))
       updateRadioButtons(session, "color_by", selected = "Groups")
+      updateRadioButtons(session, "volcano_y_axis", selected = "fdr")
       updateRadioButtons(session, "present_as", selected = "Boxplot")
       updateRadioButtons(session, "fc_dir", selected = "both")
 
@@ -1416,7 +1417,16 @@ pickerInput(
         selected = "Groups",
         inline = TRUE
       ),
-
+      radioButtons(
+        "volcano_y_axis",
+        "Y-axis:",
+        choices = c(
+          "-log10(FDR)" = "fdr",
+          "Mean log10(Intensity)" = "mean"
+        ),
+        selected = "fdr",
+        inline = TRUE
+      ),
       radioButtons(
         "present_as",
         "Click plot shows:",
@@ -1628,6 +1638,23 @@ if (isTRUE(input$use_classyfire_filter)) {
 
     dd$key <- paste(dd$Groups, dd$Feature, sep = "__")
 
+    use_mean_y <- identical(
+        input$volcano_y_axis %||% "fdr",
+        "mean"
+      )
+
+      dd$plot_y <- if (use_mean_y) {
+        log10(dd$Mean + 1.1)
+      } else {
+        dd$`Adj.p-value.log`
+      }
+
+      y_title <- if (use_mean_y) {
+        "Mean log10(Intensity)"
+      } else {
+        "-log10(FDR)"
+      }
+
     hover_txt <- paste0(
       "Groups: ", dd$Groups,
       "<br>FC: ", dd$FC,
@@ -1670,23 +1697,32 @@ if (isTRUE(input$use_classyfire_filter)) {
     y1 = 1,
     yref = "paper",
     line = list(dash = "dot")
-  ),
-  list(
-    type = "line",
-    x0 = 0,
-    x1 = 1,
-    xref = "paper",
-    y0 = ythr,
-    y1 = ythr,
-    yref = "y",
-    line = list(dash = "dot")
   )
 )
+
+# Add the FDR cutoff line only when FDR is used as y-axis
+if (!use_mean_y) {
+  shapes <- c(
+    shapes,
+    list(
+      list(
+        type = "line",
+        x0 = 0,
+        x1 = 1,
+        xref = "paper",
+        y0 = ythr,
+        y1 = ythr,
+        yref = "y",
+        line = list(dash = "dot")
+      )
+    )
+  )
+}
 
     if (input$color_by == "Groups") {
       plot_ly(
         data = dd,
-        x = ~FC, y = ~`Adj.p-value.log`,
+        x = ~FC, y = ~plot_y,
         colors = make_palette(input$volcano_palette %||% "Set1", length(unique(dd$Groups))),
         color = ~Groups,
         type = "scatter", mode = "markers",
@@ -1698,13 +1734,13 @@ if (isTRUE(input$use_classyfire_filter)) {
         layout(
           shapes = shapes,
           xaxis = list(title = "log2(FC)"),
-          yaxis = list(title = "-log10(FDR)"),
+          yaxis = list(title = y_title),
           legend = list(title = list(text = "Comparison"))
         ) %>% event_register("plotly_click")
     } else {
       plot_ly(
         data = dd,
-        x = ~FC, y = ~`Adj.p-value.log`,
+        x = ~FC, y = ~plot_y,
         color = ~log10(Mean + 1.1),
         symbol = ~Groups,
         colors = make_palette(input$volcano_palette %||% "viridis", 12),
@@ -1717,7 +1753,7 @@ if (isTRUE(input$use_classyfire_filter)) {
         layout(
           shapes = shapes,
           xaxis = list(title = "log2(FC)"),
-          yaxis = list(title = "-log10(FDR)"),
+          yaxis = list(title = y_title),
           legend = list(title = list(text = "Comparison"))
         ) %>% event_register("plotly_click")
     }

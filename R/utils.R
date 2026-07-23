@@ -638,6 +638,7 @@ volcano_to_wide_if_needed <- function(volc) {
 
   group_num_name <- unique(as.character(volc$Group_num))
   group_den_name <- unique(as.character(volc$Group_den))
+  comparison_name <- unique(as.character(volc$Groups))
 
   if (
     length(group_num_name) == 1 &&
@@ -650,10 +651,21 @@ volcano_to_wide_if_needed <- function(volc) {
       paste0("Mean_", group_den_name)
   }
 
-  # These columns are not needed in the exported volcano table
+  if (length(comparison_name) == 1) {
+    names(volc)[names(volc) == "Mean"] <-
+      paste0("Mean__", comparison_name)
+  }
+
   volc <- volc %>%
     dplyr::select(
-      -dplyr::any_of(c("Mean", "TestScale",  "Adj.p-value.log"))
+      -dplyr::any_of(
+        c(
+          "Group_num",
+          "Group_den",
+          "TestScale",
+          "Adj.p-value.log"
+        )
+      )
     )
 
   return(volc)
@@ -663,6 +675,7 @@ volcano_to_wide_if_needed <- function(volc) {
   c(
     "FC",
     "Adj.p-value",
+    "Mean",
     "Significant"
   ),
   names(volc)
