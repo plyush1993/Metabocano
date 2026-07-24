@@ -250,7 +250,7 @@ tags$head(tags$style(HTML("
           selectizeInput(
             "sample_keywords",
             "Sample column keywords (pick/add multiple):",
-            choices  = c(".mzML", ".mzXML", ".raw", " Peak area", "Area"),
+            choices  = c(".mzML", ".mzXML", ".raw", ".d", ".wiff", ".lcd", "Peak area", "Area", "_Area"),
             selected = c(".mzML", ".mzXML"),
             multiple = TRUE,
             options  = list(create = TRUE, createOnBlur = TRUE,
@@ -304,8 +304,7 @@ conditionalPanel(
       "metadata_remove_suffixes",
       "Remove suffixes/extensions:",
       choices = c(
-        ".mzML", ".mzXML", ".raw", ".RAW",
-        ".cdf", ".CDF", ".mzData", ".mzdata",
+        ".mzML", ".mzXML", ".raw", ".RAW", ".lcd",
         ".wiff", ".WIFF", ".d", ".D",
         " Peak area", " Peak Area",
         " Peak height", " Peak Height",

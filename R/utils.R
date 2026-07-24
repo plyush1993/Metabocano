@@ -149,19 +149,7 @@ clean_sample_names_for_match <- function(x, enabled = FALSE, remove_suffixes = N
     return(out)
   }
 
-  default_suffixes <- c(
-    " Peak area", " Peak Area", "Peak area", "Peak Area",
-    " Peak height", " Peak Height", "Peak height", "Peak Height",
-    "_Area", "_Height",
-    " Area", " Height",
-    ".mzML", ".mzXML", ".raw", ".RAW",
-    ".cdf", ".CDF",
-    ".mzData", ".mzdata",
-    ".wiff", ".WIFF",
-    ".d", ".D"
-  )
-
-  suffixes <- unique(c(parse_suffix_list(remove_suffixes), default_suffixes))
+  suffixes <- unique(parse_suffix_list(remove_suffixes))
   suffixes <- suffixes[nzchar(suffixes)]
 
   strip_one_suffix <- function(v, sfx) {
