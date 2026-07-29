@@ -13,7 +13,7 @@ The [`Shiny App`](https://shiny.posit.co/) for making an enhanced interactive vo
   - interactive [`Plotly`](https://plotly.com/)-type volcano plot with built-in filters, sliders, and formatting
   - table reformatted for [`MetaboAnalyst`](https://www.metaboanalyst.ca/home.xhtml) input
   - zip archive for [`AutoPlotter`](https://mpietzke.shinyapps.io/AutoPlotter/) *Compounds in Columns* input
-  - table with statistics and [`SIRIUS`](https://bio.informatik.uni-jena.de/software/sirius/)/[`GNPS`](https://gnps2.org/homepage) annotations, which can be merged in [`Cytoscape`](https://cytoscape.org/) by *Row ID* column in the used peak table
+  - table with statistics and [`SIRIUS`](https://bio.informatik.uni-jena.de/software/sirius/)/[`GNPS`](https://gnps2.org/homepage) annotations, which can be merged in [`Cytoscape`](https://cytoscape.org/) by *id* column comes from the used peak table
 
 ### Launch the App :rocket:
 **Shiny deployment**<br>
