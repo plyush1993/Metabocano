@@ -6,14 +6,14 @@
 ### Description :bookmark_tabs:
 The [`Shiny App`](https://shiny.posit.co/) for making an enhanced interactive volcano plot for metabolomics studies.
 - Directly reads the output peak table from [`mzMine`](https://mzio.io/mzmine-news/), [`xcms`](https://www.bioconductor.org/packages/release/bioc/html/xcms.html), [`MS-DIAL`](https://systemsomicslab.github.io/compms/msdial/main.html), and Default format (see [`examples of inputs`](https://github.com/plyush1993/Metabocano/tree/main/toy_examples))
-- Merges with the annotation table from [`SIRIUS`](https://bio.informatik.uni-jena.de/software/sirius/)
+- Merges with the annotation results from [`SIRIUS`](https://bio.informatik.uni-jena.de/software/sirius/), [`GNPS`](https://gnps2.org/homepage)
 - Intersects peak table with the annotation table from [`SIRIUS`](https://bio.informatik.uni-jena.de/software/sirius/), and Pairs List from [`GNPS`](https://gnps2.org/homepage)
 - Performs imputation by noise, and statistical tests by group pairs
 - Generates several outputs:
   - interactive [`Plotly`](https://plotly.com/)-type volcano plot with built-in filters, sliders, and formatting
   - table reformatted for [`MetaboAnalyst`](https://www.metaboanalyst.ca/home.xhtml) input
   - zip archive for [`AutoPlotter`](https://mpietzke.shinyapps.io/AutoPlotter/) *Compounds in Columns* input
-  - table with statistics and [`SIRIUS`](https://bio.informatik.uni-jena.de/software/sirius/) annotation, which can be merged in [`Cytoscape`](https://cytoscape.org/)
+  - table with statistics and [`SIRIUS`](https://bio.informatik.uni-jena.de/software/sirius/)/[`GNPS`](https://gnps2.org/homepage) annotations, which can be merged in [`Cytoscape`](https://cytoscape.org/) by *Row ID* column in the used peak table
 
 ### Launch the App :rocket:
 **Shiny deployment**<br>
