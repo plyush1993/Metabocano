@@ -615,7 +615,8 @@ volcano_to_wide_if_needed <- function(volc) {
       "mz",
       "RT",
       "NPC#class",
-      "ClassyFire#class"
+      "ClassyFire#class",
+      "GNPS_annotation"
     ),
     names(volc)
   )

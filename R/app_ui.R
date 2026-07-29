@@ -28,6 +28,33 @@ tags$head(tags$style(HTML("
   body { padding-bottom: 45px; }
 "))),
 
+tags$head(
+  tags$script(
+    HTML("
+      $(document).on(
+        'click',
+        '#selected_feature_info_btn',
+        function() {
+
+          var txt = $(this).attr('data-copy');
+
+          if (!txt || !navigator.clipboard) {
+            return;
+          }
+
+          navigator.clipboard.writeText(txt).then(function() {
+            Shiny.setInputValue(
+              'selected_feature_info_copied',
+              Date.now(),
+              {priority: 'event'}
+            );
+          });
+        }
+      );
+    ")
+  )
+),
+
 tags$head(tags$style(HTML("
   /* Editable Labels table: prevent white-on-white editing issue */
 
@@ -388,7 +415,14 @@ tags$hr(),
       ),
       bsTooltip(
         id = "btn5",
-        title = "<b>Join SIRIUS csv output with processed table (by <em>Row ID</em> column)</b>",
+        title = paste0(
+    "<b>Join SIRIUS annotations summary with the processed table.</b><br>",
+    "The selected peak-table <em>Row ID</em> column is matched ",
+    "to the selected SIRIUS mapping ID column.<br>",
+    "Default SIRIUS mapping ID: <em>mappingFeatureId</em><br>",
+    "Default NPC column: <em>NPS#class</em><br>",
+    "Default ClassyFire column: <em>ClassyFire#class</em>"
+  ),
         placement = "right",
         trigger = "click",
         options = list(container = "body")
@@ -399,6 +433,55 @@ tags$hr(),
         fileInput("file_sirius", "Upload SIRIUS .csv output", accept = ".csv"),
         uiOutput("sirius_pickers")
       ),
+
+div(
+  style = "display: flex; align-items: center; margin-bottom: 15px;",
+
+  materialSwitch(
+    inputId = "use_gnps_annotation",
+    label = "Join GNPS annotation",
+    value = FALSE,
+    status = "success",
+    width = "auto"
+  ),
+
+  actionButton(
+    inputId = "btn_gnps_annotation",
+    label = "?",
+    class = "btn-xs",
+    style = "
+      font-weight: bold;
+      margin-left: 10px;
+      margin-top: -20px;
+    "
+  )
+),
+
+bsTooltip(
+  id = "btn_gnps_annotation",
+  title = paste0(
+    "<b>Join GNPS library annotations with the processed table.</b><br>",
+    "The selected peak-table <em>Row ID</em> column is matched ",
+    "to the selected GNPS ID column.<br>",
+    "Default GNPS ID: <em>#Scan#</em><br>",
+    "Default annotation: <em>Compound_Name</em>"
+  ),
+  placement = "right",
+  trigger = "click",
+  options = list(container = "body")
+),
+
+conditionalPanel(
+  condition = "input.use_gnps_annotation",
+
+  fileInput(
+    "file_gnps_annotation",
+    "Upload GNPS library results (.tsv/.txt/.csv)",
+    accept = c(".tsv", ".txt", ".csv")
+  ),
+
+  uiOutput("gnps_annotation_pickers")
+),
 
           tags$hr(),
           h3(class = "highlight", "Imputation by Noise"),
