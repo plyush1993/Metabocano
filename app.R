@@ -651,7 +651,8 @@ volcano_to_wide_if_needed <- function(volc) {
       "mz",
       "RT",
       "NPC#class",
-      "ClassyFire#class"
+      "ClassyFire#class",
+      "GNPS_annotation"
     ),
     names(volc)
   )
@@ -907,6 +908,33 @@ tags$head(tags$style(HTML("
                 border-top: 1px solid #ddd; z-index: 9999; }
   body { padding-bottom: 45px; }
 "))),
+
+tags$head(
+  tags$script(
+    HTML("
+      $(document).on(
+        'click',
+        '#selected_feature_info_btn',
+        function() {
+
+          var txt = $(this).attr('data-copy');
+
+          if (!txt || !navigator.clipboard) {
+            return;
+          }
+
+          navigator.clipboard.writeText(txt).then(function() {
+            Shiny.setInputValue(
+              'selected_feature_info_copied',
+              Date.now(),
+              {priority: 'event'}
+            );
+          });
+        }
+      );
+    ")
+  )
+),
 
 tags$head(tags$style(HTML("
   /* Editable Labels table: prevent white-on-white editing issue */
@@ -1268,7 +1296,14 @@ tags$hr(),
       ),
       bsTooltip(
         id = "btn5", 
-        title = "<b>Join SIRIUS csv output with processed table (by <em>Row ID</em> column)</b>", 
+        title = paste0(
+    "<b>Join SIRIUS annotations summary with the processed table.</b><br>",
+    "The selected peak-table <em>Row ID</em> column is matched ",
+    "to the selected SIRIUS mapping ID column.<br>",
+    "Default SIRIUS mapping ID: <em>mappingFeatureId</em><br>",
+    "Default NPC column: <em>NPS#class</em><br>",
+    "Default ClassyFire column: <em>ClassyFire#class</em>"
+  ), 
         placement = "right", 
         trigger = "click", 
         options = list(container = "body")
@@ -1279,6 +1314,55 @@ tags$hr(),
         fileInput("file_sirius", "Upload SIRIUS .csv output", accept = ".csv"),
         uiOutput("sirius_pickers")
       ),
+
+div(
+  style = "display: flex; align-items: center; margin-bottom: 15px;",
+
+  materialSwitch(
+    inputId = "use_gnps_annotation",
+    label = "Join GNPS annotation",
+    value = FALSE,
+    status = "success",
+    width = "auto"
+  ),
+
+  actionButton(
+    inputId = "btn_gnps_annotation",
+    label = "?",
+    class = "btn-xs",
+    style = "
+      font-weight: bold;
+      margin-left: 10px;
+      margin-top: -20px;
+    "
+  )
+),
+
+bsTooltip(
+  id = "btn_gnps_annotation",
+  title = paste0(
+    "<b>Join GNPS library annotations with the processed table.</b><br>",
+    "The selected peak-table <em>Row ID</em> column is matched ",
+    "to the selected GNPS ID column.<br>",
+    "Default GNPS ID: <em>#Scan#</em><br>",
+    "Default annotation: <em>Compound_Name</em>"
+  ),
+  placement = "right",
+  trigger = "click",
+  options = list(container = "body")
+),
+
+conditionalPanel(
+  condition = "input.use_gnps_annotation",
+
+  fileInput(
+    "file_gnps_annotation",
+    "Upload GNPS library results (.tsv/.txt/.csv)",
+    accept = c(".tsv", ".txt", ".csv")
+  ),
+
+  uiOutput("gnps_annotation_pickers")
+),
 
           tags$hr(),
           h3(class = "highlight", "Imputation by Noise"),
@@ -1423,6 +1507,18 @@ server <- function(input, output, session) {
     "Please upload a CSV file first!"
   )
 })
+  
+  observeEvent(
+  input$selected_feature_info_copied,
+  {
+    showNotification(
+      "m/z and RT copied as: mz,rt",
+      type = "message",
+      duration = 2
+    )
+  },
+  ignoreInit = TRUE
+)
   
   session$onFlushed(function() {
     shinyjs::disable("run_proc")
@@ -2013,6 +2109,120 @@ selected_manual_comparisons <- reactive({
     )
   })
   
+gnps_annotation_df <- reactive({
+
+  req(input$use_gnps_annotation)
+  req(input$file_gnps_annotation)
+
+  ext <- tolower(
+    tools::file_ext(
+      input$file_gnps_annotation$name
+    )
+  )
+
+  validate(
+    need(
+      ext %in% c("tsv", "txt", "csv"),
+      "GNPS annotation file must be .tsv, .txt, or .csv."
+    )
+  )
+
+  delim <- if (identical(ext, "csv")) {
+    ","
+  } else {
+    "\t"
+  }
+
+  as.data.frame(
+    vroom::vroom(
+      input$file_gnps_annotation$datapath,
+      delim = delim,
+      col_names = TRUE,
+      show_col_types = FALSE
+    ),
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+})
+
+output$gnps_annotation_pickers <- renderUI({
+
+  req(gnps_annotation_df())
+
+  cols <- names(
+    gnps_annotation_df()
+  )
+
+  validate(
+    need(
+      length(cols) > 0,
+      "No columns were detected in the GNPS file."
+    )
+  )
+
+  # Default GNPS ID column
+  default_id <- guess_col(
+    cols,
+    c(
+      "#Scan#",
+      "Scan",
+      "scan",
+      "ClusterIndex",
+      "Cluster ID",
+      "row ID",
+      "id"
+    )
+  ) %||% cols[1]
+
+  # Default GNPS annotation column
+  default_annotation <- guess_col(
+    cols,
+    c(
+      "Compound_Name",
+      "Compound_name",
+      "Compound name",
+      "CompoundName",
+      "Library compound name",
+      "Annotation",
+      "Name"
+    )
+  ) %||% cols[1]
+
+  tagList(
+
+    div(
+      class = "small-note",
+      style = "
+        margin-bottom: 8px;
+        padding: 7px;
+        border: 1px solid #cccccc;
+        border-radius: 5px;
+        background-color: #ffffff;
+      ",
+
+      tags$b("Peak-table join column: "),
+
+      as.character(
+        input$row_id_col %||% "selected Row ID"
+      )
+    ),
+
+    selectInput(
+      "gnps_annotation_idcol",
+      "GNPS ID column:",
+      choices = cols,
+      selected = default_id
+    ),
+
+    selectInput(
+      "gnps_annotation_col",
+      "GNPS annotation column:",
+      choices = cols,
+      selected = default_annotation
+    )
+  )
+})
+  
   # ---- SIRIUS & GNPS stats tab ----
 
 guess_col_ci <- function(cols, candidates, default = NULL) {
@@ -2547,6 +2757,7 @@ output$sirius_gnps_main <- renderUI({
       # default annotation columns
       volc$`NPC#class` <- "Not provided"
       volc$`ClassyFire#class` <- "Not provided"
+      volc$GNPS_annotation <- "Not provided"
 
       incProgress(0.05, detail = "Joining SIRIUS (optional)")
       if (isTRUE(input$use_sirius) && !is.null(input$file_sirius)) {
@@ -2570,6 +2781,155 @@ output$sirius_gnps_main <- renderUI({
           select(-any_of(c("NPC#class.sirius", "ClassyFire#class.sirius")))
       }
 
+incProgress(
+  0.05,
+  detail = "Joining GNPS annotation (optional)"
+)
+
+if (
+  isTRUE(input$use_gnps_annotation) &&
+  !is.null(input$file_gnps_annotation)
+) {
+
+  g <- gnps_annotation_df()
+
+  req(
+    input$gnps_annotation_idcol,
+    input$gnps_annotation_col
+  )
+
+  validate(
+    need(
+      input$gnps_annotation_idcol %in% names(g),
+      "Selected GNPS ID column was not found."
+    ),
+
+    need(
+      input$gnps_annotation_col %in% names(g),
+      "Selected GNPS annotation column was not found."
+    )
+  )
+
+
+  gnps_join <- g %>%
+    dplyr::transmute(
+
+      id = trimws(
+        as.character(
+          .data[[input$gnps_annotation_idcol]]
+        )
+      ),
+
+      GNPS_annotation = trimws(
+        as.character(
+          .data[[input$gnps_annotation_col]]
+        )
+      )
+    ) %>%
+
+    dplyr::filter(
+      !is.na(id),
+      nzchar(id)
+    ) %>%
+
+    dplyr::mutate(
+      GNPS_annotation = dplyr::na_if(
+        GNPS_annotation,
+        ""
+      )
+    )
+
+  gnps_join <- gnps_join %>%
+    dplyr::group_by(id) %>%
+
+    dplyr::summarise(
+
+      GNPS_annotation = {
+
+        values <- unique(
+          GNPS_annotation[
+            !is.na(GNPS_annotation) &
+              nzchar(GNPS_annotation)
+          ]
+        )
+
+        if (length(values) > 0) {
+          paste(
+            values,
+            collapse = " | "
+          )
+        } else {
+          NA_character_
+        }
+      },
+
+      .groups = "drop"
+    )
+
+  peak_table_ids <- unique(
+    trimws(
+      as.character(
+        volc$id
+      )
+    )
+  )
+
+  matched_gnps_ids <- sum(
+    peak_table_ids %in% gnps_join$id
+  )
+
+  volc <- volc %>%
+
+    dplyr::mutate(
+      id = trimws(
+        as.character(id)
+      )
+    ) %>%
+
+    dplyr::left_join(
+      gnps_join,
+      by = "id",
+      suffix = c("", ".gnps")
+    ) %>%
+
+    dplyr::mutate(
+      GNPS_annotation = dplyr::coalesce(
+        .data[["GNPS_annotation.gnps"]],
+        .data[["GNPS_annotation"]]
+      )
+    ) %>%
+
+    dplyr::select(
+      -dplyr::any_of(
+        "GNPS_annotation.gnps"
+      )
+    )
+
+  if (matched_gnps_ids == 0) {
+
+    showNotification(
+      paste0(
+        "GNPS annotation was uploaded, but no IDs matched. ",
+        "Check that the peak-table Row ID column and selected ",
+        "GNPS ID column contain the same values."
+      ),
+      type = "warning",
+      duration = 8
+    )
+
+  } else {
+
+    showNotification(
+      paste0(
+        "GNPS annotation joined successfully: ",
+        matched_gnps_ids,
+        " unique peak-table IDs matched."
+      ),
+      type = "message",
+      duration = 5
+    )
+  }
+}
       volc <- volc %>%
         mutate(
           mz = round(mz, 6),
@@ -2835,7 +3195,7 @@ selectInput(
     tagList(
       withSpinner(plotlyOutput("volcano_plot", height = "520px"), type = 8, color = "#66CDAA"),
       div(style = "height:8px;"),
-      plotlyOutput("feature_plot", height = "260px")
+      uiOutput("selected_feature_panel")
     )
   })
 
@@ -3043,7 +3403,8 @@ if (isTRUE(input$use_classyfire_filter)) {
       "<br>RT: ", dd$RT,
       "<br>Mean Intensity: ", format(dd$Mean, big.mark = ",", scientific = FALSE),
       "<br>NPC: ", dd$`NPC#class`,
-      "<br>ClassyFire: ", dd$`ClassyFire#class`
+      "<br>ClassyFire: ", dd$`ClassyFire#class`,
+      "<br>GNPS annotation: ", dd$GNPS_annotation
     )
 
     fc_line <- suppressWarnings(as.numeric(input$fc_thr %||% 1))
@@ -3137,6 +3498,169 @@ if (!use_mean_y) {
   })
 
   # ---- Feature plot on click
+  output$selected_feature_panel <- renderUI({
+  req(procReady(), rv$volcano)
+
+  click <- plotly::event_data(
+    "plotly_click",
+    source = "volcano"
+  )
+
+  if (
+    is.null(click) ||
+    is.null(click$key) ||
+    !length(click$key)
+  ) {
+    return(NULL)
+  }
+
+  key <- as.character(click$key[[1]])
+
+  parts <- stringr::str_split_fixed(
+    key,
+    "__",
+    2
+  )
+
+  comp <- parts[1, 1]
+  feat <- parts[1, 2]
+
+  row <- rv$volcano %>%
+    dplyr::filter(
+      Groups == comp,
+      Feature == feat
+    ) %>%
+    dplyr::slice(1)
+
+  if (nrow(row) == 0) {
+    return(NULL)
+  }
+
+  # Prefer the original peak-table ID.
+  # Fall back to the internal Feature value.
+  feature_text <- feat
+
+  if (
+    "id" %in% names(row) &&
+    !is.na(row$id[[1]]) &&
+    nzchar(trimws(as.character(row$id[[1]])))
+  ) {
+    feature_text <- as.character(row$id[[1]])
+  }
+
+  mz_value <- suppressWarnings(
+    as.numeric(row$mz[[1]])
+  )
+
+  rt_value <- suppressWarnings(
+    as.numeric(row$RT[[1]])
+  )
+
+  mz_text <- if (is.finite(mz_value)) {
+    format(
+      mz_value,
+      digits = 12,
+      scientific = FALSE,
+      trim = TRUE
+    )
+  } else {
+    "NA"
+  }
+
+  rt_text <- if (is.finite(rt_value)) {
+    format(
+      rt_value,
+      digits = 8,
+      scientific = FALSE,
+      trim = TRUE
+    )
+  } else {
+    "NA"
+  }
+
+  tagList(
+    div(
+      style = "
+        background-color: white;
+        border: 2px solid #66CDAA;
+        border-radius: 8px;
+        padding: 12px 15px;
+        margin-bottom: 12px;
+      ",
+
+      tags$h4(
+        style = "
+          margin-top: 0;
+          margin-bottom: 12px;
+          font-weight: bold;
+          color: #2c3e50;
+        ",
+        "Feature ID: ",
+        tags$span(
+          style = "color: #18bc9c;",
+          feature_text
+        )
+      ),
+
+      fluidRow(
+        column(
+          width = 6,
+
+          tags$label(
+            `for` = "selected_mz_text",
+            style = "font-weight: bold;",
+            "m/z:"
+          ),
+
+          tags$input(
+            id = "selected_mz_text",
+            type = "text",
+            class = "form-control",
+            value = mz_text,
+            readonly = "readonly",
+
+            # Clicking or focusing selects the complete value
+            onclick = "this.select();",
+            onfocus = "this.select();"
+          )
+        ),
+
+        column(
+          width = 6,
+
+          tags$label(
+            `for` = "selected_rt_text",
+            style = "font-weight: bold;",
+            "RT:"
+          ),
+
+          tags$input(
+            id = "selected_rt_text",
+            type = "text",
+            class = "form-control",
+            value = rt_text,
+            readonly = "readonly",
+
+            onclick = "this.select();",
+            onfocus = "this.select();"
+          )
+        )
+      ),
+
+      div(
+        class = "small-note",
+        style = "margin-top: 8px;",
+        "Click a value to select it, then press Ctrl+C to copy."
+      )
+    ),
+
+    plotlyOutput(
+      "feature_plot",
+      height = "260px"
+    )
+  )
+})
+  
   output$feature_plot <- renderPlotly({
     req(procReady(), rv$df_used, rv$mat)
 
