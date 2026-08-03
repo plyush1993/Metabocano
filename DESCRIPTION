@@ -1,6 +1,6 @@
 Package: metabocano
 Title: Enhanced Interactive Volcano Plot
-Version: 0.1.10
+Version: 0.1.11
 Authors@R: 
      person("Ivan", "Plyushchenko", , "plyushchenko.ivan@gmail.com", role = c("aut", "cre"),
            comment = c(ORCID = "0000-0003-3883-4695"))
@@ -30,6 +30,6 @@ Imports:
 Remotes: 
     bioc::limma
 Depends: 
-    R (>= 4.1.2)
+    R (>= 4.5.0)
 URL: https://github.com/plyush1993/metabocano, https://plyush1993.shinyapps.io/metabocano/
 BugReports: https://github.com/plyush1993/metabocano/issues

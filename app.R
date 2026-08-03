@@ -30,6 +30,7 @@ suppressPackageStartupMessages({
   library(limma)
   library(RColorBrewer)
   library(zip)
+  library(igraph)
 })
 
 options(shiny.maxRequestSize = 1024 * 1024^2)
@@ -38,6 +39,98 @@ options(shiny.maxRequestSize = 1024 * 1024^2)
 
 `%||%` <- function(x, y) {
   if (is.null(x) || length(x) == 0 || (length(x) == 1 && is.na(x))) y else x
+}
+
+clean_missing_text <- function(x) {
+
+  x <- trimws(
+    as.character(x)
+  )
+
+  bad <- (
+    is.na(x) |
+      !nzchar(x) |
+      tolower(x) %in% c(
+        "na",
+        "nan",
+        "null",
+        "not provided"
+      )
+  )
+
+  x[bad] <- NA_character_
+
+  x
+}
+
+make_prefixed_colmap <- function(cols, prefix) {
+
+  cols <- as.character(
+    cols %||% character(0)
+  )
+
+  cols <- cols[
+    !is.na(cols) &
+      nzchar(cols)
+  ]
+
+  if (!length(cols)) {
+    return(
+      stats::setNames(
+        character(0),
+        character(0)
+      )
+    )
+  }
+
+  output_names <- make.unique(
+    paste0(prefix, cols),
+    sep = "_"
+  )
+
+  stats::setNames(
+    output_names,
+    cols
+  )
+}
+
+format_extra_value <- function(x) {
+
+  if (is.null(x) || !length(x)) {
+    return("NA")
+  }
+
+  value <- x[[1]]
+
+  if (length(value) == 0 || is.na(value)) {
+    return("NA")
+  }
+
+  if (is.numeric(value)) {
+
+    if (!is.finite(value)) {
+      return("NA")
+    }
+
+    return(
+      format(
+        value,
+        digits = 12,
+        scientific = FALSE,
+        trim = TRUE
+      )
+    )
+  }
+
+  value <- trimws(
+    as.character(value)
+  )
+
+  if (!nzchar(value)) {
+    "NA"
+  } else {
+    value
+  }
 }
 
 read_msdial_robust <- function(path) {
@@ -346,31 +439,238 @@ guess_col <- function(cols, candidates) {
   NULL 
 }
 
-safe_ttest_p <- function(x, g, paired = FALSE, var.equal = FALSE) {
-  x <- as.numeric(x)
-  g <- as.factor(g)
-  if (length(unique(g)) != 2) return(1)
-  a <- x[g == levels(g)[1]]
-  b <- x[g == levels(g)[2]]
-  a <- a[is.finite(a)]
-  b <- b[is.finite(b)]
-  if (length(a) < 2 || length(b) < 2) return(1)
-  if (stats::sd(a) == 0 && stats::sd(b) == 0) return(1)
-  out <- try(stats::t.test(x ~ g, paired = paired, var.equal = var.equal)$p.value, silent = TRUE)
-  if (inherits(out, "try-error") || !is.finite(out)) 1 else as.numeric(out)
+safe_ttest_p <- function(
+    x,
+    g,
+    paired = FALSE,
+    var.equal = FALSE
+) {
+
+  x <- suppressWarnings(
+    as.numeric(x)
+  )
+
+  g <- droplevels(
+    as.factor(g)
+  )
+
+  # Remove observations without a valid group
+  valid_group <- !is.na(g)
+
+  x <- x[valid_group]
+  g <- droplevels(
+    g[valid_group]
+  )
+
+  if (nlevels(g) != 2) {
+    return(NA_real_)
+  }
+
+  group_levels <- levels(g)
+
+  a <- x[
+    g == group_levels[1]
+  ]
+
+  b <- x[
+    g == group_levels[2]
+  ]
+
+  if (isTRUE(paired)) {
+
+    # Paired samples must have equal lengths
+    if (length(a) != length(b)) {
+      return(NA_real_)
+    }
+
+    # Remove missing values pairwise
+    complete_pairs <- is.finite(a) &
+      is.finite(b)
+
+    a <- a[complete_pairs]
+    b <- b[complete_pairs]
+
+    if (length(a) < 2) {
+      return(NA_real_)
+    }
+
+    p_value <- tryCatch(
+
+      stats::t.test(
+        x = a,
+        y = b,
+        paired = TRUE
+      )$p.value,
+
+      error = function(e) {
+        NA_real_
+      }
+    )
+
+  } else {
+
+    # For unpaired tests, remove missing values independently
+    a <- a[
+      is.finite(a)
+    ]
+
+    b <- b[
+      is.finite(b)
+    ]
+
+    if (
+      length(a) < 2 ||
+      length(b) < 2
+    ) {
+      return(NA_real_)
+    }
+
+    p_value <- tryCatch(
+
+      stats::t.test(
+        x = a,
+        y = b,
+        paired = FALSE,
+        var.equal = isTRUE(var.equal)
+      )$p.value,
+
+      error = function(e) {
+        NA_real_
+      }
+    )
+  }
+
+  if (
+    length(p_value) != 1 ||
+    !is.finite(p_value)
+  ) {
+    return(NA_real_)
+  }
+
+  as.numeric(p_value)
 }
 
-safe_wilcox_p <- function(x, g, paired = FALSE) {
-  x <- as.numeric(x)
-  g <- as.factor(g)
-  if (length(unique(g)) != 2) return(1)
-  a <- x[g == levels(g)[1]]
-  b <- x[g == levels(g)[2]]
-  a <- a[is.finite(a)]
-  b <- b[is.finite(b)]
-  if (length(a) < 1 || length(b) < 1) return(1)
-  out <- try(stats::wilcox.test(x ~ g, paired = paired)$p.value, silent = TRUE)
-  if (inherits(out, "try-error") || !is.finite(out)) 1 else as.numeric(out)
+safe_wilcox_p <- function(
+    x,
+    g,
+    paired = FALSE
+) {
+
+  x <- suppressWarnings(
+    as.numeric(x)
+  )
+
+  g <- droplevels(
+    as.factor(g)
+  )
+
+  # Remove observations without a valid group
+  valid_group <- !is.na(g)
+
+  x <- x[valid_group]
+  g <- droplevels(
+    g[valid_group]
+  )
+
+  if (nlevels(g) != 2) {
+    return(NA_real_)
+  }
+
+  group_levels <- levels(g)
+
+  a <- x[
+    g == group_levels[1]
+  ]
+
+  b <- x[
+    g == group_levels[2]
+  ]
+
+  if (isTRUE(paired)) {
+
+    # Paired samples must have equal lengths
+    if (length(a) != length(b)) {
+      return(NA_real_)
+    }
+
+    # Remove missing values pairwise
+    complete_pairs <- is.finite(a) &
+      is.finite(b)
+
+    a <- a[complete_pairs]
+    b <- b[complete_pairs]
+
+    if (length(a) < 1) {
+      return(NA_real_)
+    }
+
+    p_value <- tryCatch(
+
+      suppressWarnings(
+        stats::wilcox.test(
+          x = a,
+          y = b,
+          paired = TRUE,
+
+          # Explicit approximation gives more consistent
+          # behavior across different R versions
+          exact = FALSE,
+          correct = TRUE
+        )$p.value
+      ),
+
+      error = function(e) {
+        NA_real_
+      }
+    )
+
+  } else {
+
+    # For unpaired tests, remove missing values independently
+    a <- a[
+      is.finite(a)
+    ]
+
+    b <- b[
+      is.finite(b)
+    ]
+
+    if (
+      length(a) < 1 ||
+      length(b) < 1
+    ) {
+      return(NA_real_)
+    }
+
+    p_value <- tryCatch(
+
+      suppressWarnings(
+        stats::wilcox.test(
+          x = a,
+          y = b,
+          paired = FALSE,
+
+          # Explicit approximation gives more consistent
+          # behavior across different R versions
+          exact = FALSE,
+          correct = TRUE
+        )$p.value
+      ),
+
+      error = function(e) {
+        NA_real_
+      }
+    )
+  }
+
+  if (
+    length(p_value) != 1 ||
+    !is.finite(p_value)
+  ) {
+    return(NA_real_)
+  }
+
+  as.numeric(p_value)
 }
 
 parse_feature_table_to_matrix <- function(raw_df,
@@ -624,7 +924,7 @@ compute_stats_long <- function(df_used,
     )
 
     dd$`Adj.p-value.log` <- -log10(pmax(dd$`Adj.p-value`, .Machine$double.xmin))
-    dd$Significant <- (dd$`Adj.p-value` <= 0.05) & (abs(dd$FC) >= 1)
+    dd$Significant_default <- (dd$`Adj.p-value` <= 0.05) & (abs(dd$FC) >= 1)
 
     out_list[[i]] <- dd
   }
@@ -644,18 +944,50 @@ volcano_to_wide_if_needed <- function(volc) {
     return(volc)
   }
 
-  static_cols <- intersect(
-    c(
-      "Feature",
-      "id",
-      "mz",
-      "RT",
-      "NPC#class",
-      "ClassyFire#class",
-      "GNPS_annotation"
-    ),
-    names(volc)
+  # Columns that vary between statistical comparisons
+comparison_specific_cols <- c(
+  "Groups",
+  "Group_num",
+  "Group_den",
+  "Adj.p-value",
+  "Mean",
+  "mean_num",
+  "mean_den",
+  "FC",
+  "TestScale",
+  "Adj.p-value.log",
+  "Significant_default"
+)
+
+# Everything else is feature-level metadata and should
+# remain in the wide report, including Peak_* and SIRIUS_*.
+static_cols <- setdiff(
+  names(volc),
+  comparison_specific_cols
+)
+
+# Keep the most important columns first
+preferred_static_order <- c(
+  "Feature",
+  "id",
+  "mz",
+  "RT",
+  "NPC#class",
+  "ClassyFire#class",
+  "GNPS_annotation"
+)
+
+static_cols <- c(
+  intersect(
+    preferred_static_order,
+    static_cols
+  ),
+
+  setdiff(
+    static_cols,
+    preferred_static_order
   )
+)
 
   n_comp <- dplyr::n_distinct(volc$Groups)
 
@@ -701,7 +1033,7 @@ volcano_to_wide_if_needed <- function(volc) {
     "FC",
     "Adj.p-value",
     "Mean",
-    "Significant"
+    "Significant_default"
   ),
   names(volc)
 )
@@ -870,28 +1202,22 @@ make_autoplotter_name_map <- function(fmap, volcano = NULL) {
       ) %>%
       dplyr::distinct(Feature, .keep_all = TRUE) %>%
       dplyr::mutate(
-        `NPC#class` = dplyr::if_else(
-          is.na(`NPC#class`) | `NPC#class` == "Not provided",
-          "",
-          as.character(`NPC#class`)
-        ),
-        `ClassyFire#class` = dplyr::if_else(
-          is.na(`ClassyFire#class`) | `ClassyFire#class` == "Not provided",
-          "",
-          as.character(`ClassyFire#class`)
-        )
+        `NPC#class` = clean_missing_text(
+        `NPC#class`
+      ),
+      
+      `ClassyFire#class` = clean_missing_text(
+        `ClassyFire#class`
+      )
       )
 
     out <- out %>%
       dplyr::left_join(ann, by = c("Name" = "Feature"))
 
-  } else {
-    out$`NPC#class` <- ""
-    out$`ClassyFire#class` <- ""
-  }
-
-  out$`NPC#class`[is.na(out$`NPC#class`)] <- ""
-  out$`ClassyFire#class`[is.na(out$`ClassyFire#class`)] <- ""
+} else {
+  out$`NPC#class` <- NA_character_
+  out$`ClassyFire#class` <- NA_character_
+}
 
   out
 }
@@ -1273,9 +1599,50 @@ conditionalPanel(
 ),
 
 checkboxInput("show_labels_table", "Show labels table", TRUE),
-tags$hr(),
 
           h3(class = "highlight", "Join with Annotation"),
+      div(
+  style = "
+    display: flex;
+    align-items: center;
+    margin-bottom: 10px;
+  ",
+
+  materialSwitch(
+    inputId = "use_peak_extra_cols",
+    label = "Join with other peak table column",
+    value = FALSE,
+    status = "success",
+    width = "auto"
+  ),
+  
+  actionButton(
+          inputId = "btnAD", 
+          label = "?", 
+          class = "btn-xs", 
+          style = "font-weight: bold; margin-left: 10px; margin-top: -20px;"
+        )
+),
+
+bsTooltip(
+        id = "btnAD", 
+        title = paste0(
+    "Selected columns will be added to the downloaded volcano table ",
+      "and displayed after clicking a volcano point."
+  ), 
+        placement = "right", 
+        trigger = "click", 
+        options = list(container = "body")
+      ),
+
+conditionalPanel(
+  condition = "input.use_peak_extra_cols == true",
+
+  uiOutput(
+    "peak_extra_cols_ui"
+  )
+),
+
       div(
         style = "display: flex; align-items: center; margin-bottom: 15px;",
         
@@ -1659,6 +2026,82 @@ server <- function(input, output, session) {
     datatable(head(raw_df(), 20), options = list(scrollX = TRUE, pageLength = 8))
   })
 
+  output$peak_extra_cols_ui <- renderUI({
+
+  req(raw_df())
+
+  df <- raw_df()
+  cols <- names(df)
+
+  # Identify sample-intensity columns so they are not offered
+  # as additional feature metadata columns.
+  sample_keywords <- input$sample_keywords %||%
+    character(0)
+
+  sample_idx <- multi_sample_idx(
+    cols,
+    sample_keywords
+  )
+
+  sample_cols <- cols[
+    sample_idx
+  ]
+
+  # Exclude columns already used as essential feature metadata
+  excluded_cols <- unique(
+    c(
+      input$row_id_col %||% character(0),
+      input$mz_col %||% character(0),
+      input$rt_col %||% character(0),
+      sample_cols,
+      "<Auto-generate>"
+    )
+  )
+
+  choices <- setdiff(
+    cols,
+    excluded_cols
+  )
+
+  if (!length(choices)) {
+
+    return(
+      div(
+        class = "small-note",
+        "No additional non-sample peak-table columns were detected."
+      )
+    )
+  }
+
+  current_selection <- isolate(
+    input$peak_extra_cols
+  ) %||% character(0)
+
+  current_selection <- intersect(
+    current_selection,
+    choices
+  )
+
+  pickerInput(
+    inputId = "peak_extra_cols",
+    label = "Peak-table columns to include:",
+    choices = choices,
+    selected = current_selection,
+    multiple = TRUE,
+
+    options = list(
+      `actions-box` = TRUE,
+      `live-search` = TRUE,
+      `none-selected-text` =
+        "Select one or more peak-table columns",
+      `selected-text-format` = "count > 2",
+      `count-selected-text` =
+        "{0} peak-table column(s) selected",
+      `style` = "btn-success"
+    )
+  )
+})
+  
   # ---- Build matrix + fmap ----
   built <- reactive({
     req(raw_df(), input$row_id_col, input$mz_col, input$rt_col)
@@ -2097,17 +2540,132 @@ selected_manual_comparisons <- reactive({
   })
 
   output$sirius_pickers <- renderUI({
-    req(sirius_df())
-    cols <- names(sirius_df())
-    tagList(
-      selectInput("sirius_idcol", "SIRIUS Feature ID column:",
-                  choices = cols, selected = if ("mappingFeatureId" %in% cols) "mappingFeatureId" else cols[1]),
-      selectInput("sirius_npcol", "NPC column:",
-                  choices = cols, selected = if ("NPC#class" %in% cols) "NPC#class" else cols[1]),
-      selectInput("sirius_cfcol", "ClassyFire column:",
-                  choices = cols, selected = if ("ClassyFire#class" %in% cols) "ClassyFire#class" else cols[1])
+
+  req(sirius_df())
+
+  cols <- names(
+    sirius_df()
+  )
+
+  tagList(
+
+    selectInput(
+      "sirius_idcol",
+      "SIRIUS Feature ID column:",
+      choices = cols,
+      selected = if (
+        "mappingFeatureId" %in% cols
+      ) {
+        "mappingFeatureId"
+      } else {
+        cols[1]
+      }
+    ),
+
+    selectInput(
+      "sirius_npcol",
+      "NPC column:",
+      choices = cols,
+      selected = if (
+        "NPC#class" %in% cols
+      ) {
+        "NPC#class"
+      } else {
+        cols[1]
+      }
+    ),
+
+    selectInput(
+      "sirius_cfcol",
+      "ClassyFire column:",
+      choices = cols,
+      selected = if (
+        "ClassyFire#class" %in% cols
+      ) {
+        "ClassyFire#class"
+      } else {
+        cols[1]
+      }
+    ),
+
+    materialSwitch(
+      inputId = "use_sirius_extra_cols",
+      label = "Add additional SIRIUS columns",
+      value = FALSE,
+      status = "success",
+      width = "auto"
+    ),
+
+    conditionalPanel(
+      condition = "input.use_sirius_extra_cols == true",
+
+      uiOutput(
+        "sirius_extra_cols_ui"
+      )
     )
-  })
+  )
+})
+  
+  output$sirius_extra_cols_ui <- renderUI({
+
+  req(
+    sirius_df(),
+    input$sirius_idcol,
+    input$sirius_npcol,
+    input$sirius_cfcol
+  )
+
+  cols <- names(
+    sirius_df()
+  )
+
+  choices <- setdiff(
+    cols,
+    c(
+      input$sirius_idcol,
+      input$sirius_npcol,
+      input$sirius_cfcol
+    )
+  )
+
+  if (!length(choices)) {
+
+    return(
+      div(
+        class = "small-note",
+        "No additional SIRIUS columns are available."
+      )
+    )
+  }
+
+  current_selection <- isolate(
+    input$sirius_extra_cols
+  ) %||% character(0)
+
+  current_selection <- intersect(
+    current_selection,
+    choices
+  )
+
+  pickerInput(
+    inputId = "sirius_extra_cols",
+    label = "Additional SIRIUS columns:",
+    choices = choices,
+    selected = current_selection,
+    multiple = TRUE,
+
+    options = list(
+      `actions-box` = TRUE,
+      `live-search` = TRUE,
+      `none-selected-text` =
+        "Select one or more SIRIUS columns",
+      `selected-text-format` = "count > 2",
+      `count-selected-text` =
+        "{0} SIRIUS column(s) selected",
+      `style` = "btn-success"
+    )
+  )
+})
   
 gnps_annotation_df <- reactive({
 
@@ -2174,7 +2732,7 @@ output$gnps_annotation_pickers <- renderUI({
     )
   ) %||% cols[1]
 
-  # Default GNPS annotation column
+  # Default primary annotation column
   default_annotation <- guess_col(
     cols,
     c(
@@ -2190,23 +2748,6 @@ output$gnps_annotation_pickers <- renderUI({
 
   tagList(
 
-    div(
-      class = "small-note",
-      style = "
-        margin-bottom: 8px;
-        padding: 7px;
-        border: 1px solid #cccccc;
-        border-radius: 5px;
-        background-color: #ffffff;
-      ",
-
-      tags$b("Peak-table join column: "),
-
-      as.character(
-        input$row_id_col %||% "selected Row ID"
-      )
-    ),
-
     selectInput(
       "gnps_annotation_idcol",
       "GNPS ID column:",
@@ -2216,13 +2757,89 @@ output$gnps_annotation_pickers <- renderUI({
 
     selectInput(
       "gnps_annotation_col",
-      "GNPS annotation column:",
+      "Primary GNPS annotation column:",
       choices = cols,
       selected = default_annotation
+    ),
+
+    materialSwitch(
+      inputId = "use_gnps_extra_cols",
+      label = "Add additional GNPS columns",
+      value = FALSE,
+      status = "success",
+      width = "auto"
+    ),
+
+    conditionalPanel(
+      condition = "input.use_gnps_extra_cols == true",
+
+      uiOutput(
+        "gnps_extra_cols_ui"
+      )
     )
   )
 })
   
+output$gnps_extra_cols_ui <- renderUI({
+
+  req(
+    gnps_annotation_df(),
+    input$gnps_annotation_idcol,
+    input$gnps_annotation_col
+  )
+
+  cols <- names(
+    gnps_annotation_df()
+  )
+
+  # Do not offer the join ID or primary annotation again
+  choices <- setdiff(
+    cols,
+    c(
+      input$gnps_annotation_idcol,
+      input$gnps_annotation_col
+    )
+  )
+
+  if (!length(choices)) {
+
+    return(
+      div(
+        class = "small-note",
+        "No additional GNPS columns are available."
+      )
+    )
+  }
+
+  current_selection <- isolate(
+    input$gnps_extra_cols
+  ) %||% character(0)
+
+  current_selection <- intersect(
+    current_selection,
+    choices
+  )
+
+  pickerInput(
+    inputId = "gnps_extra_cols",
+    label = "Additional GNPS columns:",
+    choices = choices,
+    selected = current_selection,
+    multiple = TRUE,
+
+    options = list(
+      `actions-box` = TRUE,
+      `live-search` = TRUE,
+      `none-selected-text` =
+        "Select one or more GNPS columns",
+      `selected-text-format` = "count > 2",
+      `count-selected-text` =
+        "{0} GNPS column(s) selected",
+      `style` = "btn-success"
+    )
+  )
+})
+
   # ---- SIRIUS & GNPS stats tab ----
 
 guess_col_ci <- function(cols, candidates, default = NULL) {
@@ -2335,7 +2952,8 @@ output$sirius_gnps_sidebar <- renderUI({
     ),
 
     uiOutput("gnps_pickers_ui"),
-
+    uiOutput("network_component_picker"),
+    
     div(
       class = "small-note",
       "GNPS pairs are converted from ClusterID1/ClusterID2 into one ClusterID column. By default, no peak-table pruning is applied. If a peak-table ID column is selected, SIRIUS IDs and GNPS ClusterIDs are restricted to IDs present in the uploaded peak table."
@@ -2548,6 +3166,89 @@ gnps_component_map <- reactive({
   out
 })
 
+gnps_component_edges <- reactive({
+
+  req(
+    gnps_pairs_df(),
+    input$gnps_cluster1_col,
+    input$gnps_cluster2_col,
+    input$gnps_component_col
+  )
+
+  g <- as.data.frame(
+    gnps_pairs_df(),
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+
+  validate(
+    need(
+      input$gnps_cluster1_col %in% names(g),
+      "GNPS ClusterID1 column was not found."
+    ),
+    need(
+      input$gnps_cluster2_col %in% names(g),
+      "GNPS ClusterID2 column was not found."
+    ),
+    need(
+      input$gnps_component_col %in% names(g),
+      "GNPS ComponentIndex column was not found."
+    )
+  )
+
+  edges <- g %>%
+    dplyr::transmute(
+
+      ComponentIndex = trimws(
+        as.character(
+          .data[[input$gnps_component_col]]
+        )
+      ),
+
+      ClusterID1 = trimws(
+        as.character(
+          .data[[input$gnps_cluster1_col]]
+        )
+      ),
+
+      ClusterID2 = trimws(
+        as.character(
+          .data[[input$gnps_cluster2_col]]
+        )
+      )
+    ) %>%
+
+    dplyr::filter(
+      !is.na(ComponentIndex),
+      !is.na(ClusterID1),
+      !is.na(ClusterID2),
+      nzchar(ComponentIndex),
+      nzchar(ClusterID1),
+      nzchar(ClusterID2),
+      ClusterID1 != ClusterID2
+    ) %>%
+
+    dplyr::distinct(
+      ComponentIndex,
+      ClusterID1,
+      ClusterID2
+    )
+
+  # Optional pruning using the selected peak-table ID column
+  keep_ids <- selected_peak_ids_for_gnps()
+
+  if (!is.null(keep_ids) && length(keep_ids)) {
+
+    edges <- edges %>%
+      dplyr::filter(
+        ClusterID1 %in% keep_ids,
+        ClusterID2 %in% keep_ids
+      )
+  }
+
+  edges
+})
+
 selected_class_component_stats <- reactive({
   req(sirius_stats_data(), input$stats_selected_class)
 
@@ -2593,6 +3294,1051 @@ selected_class_component_stats <- reactive({
       .groups = "drop"
     ) %>%
     dplyr::arrange(dplyr::desc(Points), ComponentIndex)
+})
+
+output$network_component_picker <- renderUI({
+
+  req(
+    input$file_gnps_pairs,
+    input$stats_selected_class,
+    selected_class_component_stats(),
+    gnps_component_edges()
+  )
+
+  class_stats <- selected_class_component_stats()
+
+  # Remove rows that cannot be displayed as a network
+  class_stats <- class_stats %>%
+    dplyr::filter(
+      !ComponentIndex %in% c(
+        "No ComponentIndex match",
+        "GNPS pairs not uploaded"
+      )
+    )
+
+  if (!nrow(class_stats)) {
+
+    return(
+      tagList(
+        tags$hr(),
+
+        div(
+          class = "small-note",
+          style = "
+            padding: 8px;
+            border: 1px solid #dddddd;
+            border-radius: 6px;
+          ",
+          paste0(
+            "The selected SIRIUS value does not occur in a ",
+            "displayable GNPS component."
+          )
+        )
+      )
+    )
+  }
+
+  edge_data <- gnps_component_edges()
+
+  # Count total nodes in each available component
+  component_totals <- edge_data %>%
+
+    tidyr::pivot_longer(
+      cols = c(
+        "ClusterID1",
+        "ClusterID2"
+      ),
+      values_to = "ClusterID"
+    ) %>%
+
+    dplyr::distinct(
+      ComponentIndex,
+      ClusterID
+    ) %>%
+
+    dplyr::count(
+      ComponentIndex,
+      name = "Total_nodes"
+    )
+
+  component_options <- class_stats %>%
+
+    dplyr::left_join(
+      component_totals,
+      by = "ComponentIndex"
+    ) %>%
+
+    # Exclude components with no surviving edge after pruning
+    dplyr::filter(
+      !is.na(Total_nodes),
+      Total_nodes >= 2
+    ) %>%
+
+    dplyr::mutate(
+      Display_name = paste0(
+        "Component ",
+        ComponentIndex,
+        " — ",
+        Points,
+        " selected / ",
+        Total_nodes,
+        " total"
+      )
+    ) %>%
+
+    dplyr::arrange(
+      dplyr::desc(Points),
+      dplyr::desc(Total_nodes),
+      ComponentIndex
+    )
+
+  if (!nrow(component_options)) {
+
+    return(
+      tagList(
+        tags$hr(),
+
+        div(
+          class = "small-note",
+          paste0(
+            "No component containing the selected class has ",
+            "surviving edges after optional peak-table pruning."
+          )
+        )
+      )
+    )
+  }
+
+  old_component <- isolate(
+    input$network_component
+  )
+
+  selected_component <- if (
+    !is.null(old_component) &&
+    old_component %in% component_options$ComponentIndex
+  ) {
+    old_component
+  } else {
+    component_options$ComponentIndex[1]
+  }
+
+  tagList(
+
+    tags$hr(),
+
+    h3(
+      class = "highlight",
+      "Interactive component network"
+    ),
+
+    pickerInput(
+      inputId = "network_component",
+      label = "GNPS component to display:",
+
+      choices = stats::setNames(
+        component_options$ComponentIndex,
+        component_options$Display_name
+      ),
+
+      selected = selected_component,
+      multiple = FALSE,
+
+      options = list(
+        `live-search` = TRUE,
+        `style` = "btn-success"
+      )
+    ),
+
+    radioButtons(
+      inputId = "network_label_mode",
+      label = "Node labels:",
+      choices = c(
+        "Selected class only" = "selected",
+        "All nodes" = "all",
+        "No labels" = "none"
+      ),
+      selected = "selected"
+    ),
+
+    uiOutput(
+      "network_volcano_options"
+    )
+  )
+})
+
+output$network_volcano_options <- renderUI({
+
+  if (
+    is.null(rv$volcano) ||
+    !is.data.frame(rv$volcano) ||
+    !nrow(rv$volcano) ||
+    !"id" %in% names(rv$volcano)
+  ) {
+
+    return(
+      div(
+        class = "small-note",
+        style = "margin-top: 8px;",
+        paste0(
+          "Run preprocessing to add volcano FC, FDR, mean ",
+          "intensity, and GNPS annotation to node hover."
+        )
+      )
+    )
+  }
+
+  volc <- as.data.frame(
+    rv$volcano,
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+
+  comparison_control <- NULL
+
+  if ("Groups" %in% names(volc)) {
+
+    comparisons <- unique(
+      as.character(
+        volc$Groups
+      )
+    )
+
+    comparisons <- comparisons[
+      !is.na(comparisons) &
+        nzchar(comparisons)
+    ]
+
+    if (length(comparisons) > 1) {
+
+      old_comparison <- isolate(
+        input$network_volcano_group
+      )
+
+      selected_comparison <- if (
+        !is.null(old_comparison) &&
+        old_comparison %in% comparisons
+      ) {
+        old_comparison
+      } else {
+        comparisons[1]
+      }
+
+      comparison_control <- conditionalPanel(
+        condition = "input.network_use_volcano == true",
+
+        selectInput(
+          "network_volcano_group",
+          "Volcano comparison:",
+          choices = comparisons,
+          selected = selected_comparison
+        )
+      )
+    }
+  }
+
+  tagList(
+
+    materialSwitch(
+      inputId = "network_use_volcano",
+      label = "Add volcano results to node hover",
+      value = TRUE,
+      status = "success",
+      width = "auto"
+    ),
+
+    comparison_control
+  )
+})
+
+selected_component_network_data <- reactive({
+
+  req(
+    input$file_gnps_pairs,
+    input$network_component,
+    input$stats_selected_class,
+    gnps_component_edges()
+  )
+
+  selected_component <- as.character(
+    input$network_component
+  )
+
+  component_edges <- gnps_component_edges() %>%
+
+    dplyr::filter(
+      ComponentIndex == selected_component
+    ) %>%
+
+    dplyr::select(
+      ClusterID1,
+      ClusterID2
+    ) %>%
+
+    dplyr::distinct()
+
+  validate(
+    need(
+      nrow(component_edges) > 0,
+      "The selected component contains no displayable GNPS edges."
+    )
+  )
+
+  # Build and simplify graph
+  graph_object <- igraph::graph_from_data_frame(
+    component_edges,
+    directed = FALSE
+  )
+
+  graph_object <- igraph::simplify(
+    graph_object,
+    remove.multiple = TRUE,
+    remove.loops = TRUE
+  )
+
+  node_count <- igraph::vcount(
+    graph_object
+  )
+
+  validate(
+    need(
+      node_count <= 500,
+      paste0(
+        "This component contains ",
+        node_count,
+        " nodes. Interactive display is limited to 500 nodes."
+      )
+    )
+  )
+
+  # Reproducible force-directed layout
+  set.seed(1234)
+
+  coordinates <- igraph::layout_with_fr(
+    graph_object,
+    niter = 500
+  )
+
+  node_names <- igraph::V(
+    graph_object
+  )$name
+
+  node_data <- tibble::tibble(
+    ClusterID = as.character(
+      node_names
+    ),
+
+    x = as.numeric(
+      coordinates[, 1]
+    ),
+
+    y = as.numeric(
+      coordinates[, 2]
+    ),
+
+    Degree = as.integer(
+      igraph::degree(
+        graph_object
+      )
+    )
+  )
+
+  # Aggregate all values from the selected SIRIUS column
+  sirius_node_annotations <- sirius_stats_data() %>%
+
+    dplyr::group_by(
+      SIRIUS_ID
+    ) %>%
+
+    dplyr::summarise(
+
+      SIRIUS_values = paste(
+        sort(
+          unique(
+            Annotation[
+              !is.na(Annotation)
+            ]
+          )
+        ),
+        collapse = " | "
+      ),
+
+      Selected_class = any(
+        Annotation ==
+          input$stats_selected_class
+      ),
+
+      .groups = "drop"
+    ) %>%
+
+    dplyr::rename(
+      ClusterID = SIRIUS_ID
+    )
+
+  node_data <- node_data %>%
+
+    dplyr::left_join(
+      sirius_node_annotations,
+      by = "ClusterID"
+    ) %>%
+
+    dplyr::mutate(
+
+      Selected_class = dplyr::coalesce(
+        Selected_class,
+        FALSE
+      ),
+
+      Has_SIRIUS = (
+        !is.na(SIRIUS_values) &
+          nzchar(SIRIUS_values)
+      ),
+
+      Node_type = dplyr::case_when(
+        Selected_class ~ "Selected class",
+        Has_SIRIUS ~ "Other SIRIUS annotation",
+        TRUE ~ "No SIRIUS annotation"
+      )
+    )
+
+  volcano_added <- FALSE
+
+  if (
+    isTRUE(input$network_use_volcano) &&
+    !is.null(rv$volcano) &&
+    is.data.frame(rv$volcano) &&
+    nrow(rv$volcano) &&
+    "id" %in% names(rv$volcano)
+  ) {
+
+    volc <- as.data.frame(
+      rv$volcano,
+      check.names = FALSE,
+      stringsAsFactors = FALSE
+    )
+
+    if ("Groups" %in% names(volc)) {
+
+      available_groups <- unique(
+        as.character(
+          volc$Groups
+        )
+      )
+
+      selected_group <- input$network_volcano_group
+
+      if (
+        is.null(selected_group) ||
+        !selected_group %in% available_groups
+      ) {
+        selected_group <- available_groups[1]
+      }
+
+      volc <- volc[
+        as.character(volc$Groups) ==
+          selected_group,
+        ,
+        drop = FALSE
+      ]
+    }
+
+    volcano_node_data <- tibble::tibble(
+      ClusterID = trimws(
+        as.character(
+          volc$id
+        )
+      )
+    )
+
+    if ("FC" %in% names(volc)) {
+      volcano_node_data$Volcano_FC <- suppressWarnings(
+        as.numeric(
+          volc$FC
+        )
+      )
+    }
+
+    if ("Adj.p-value" %in% names(volc)) {
+      volcano_node_data$Volcano_FDR <- suppressWarnings(
+        as.numeric(
+          volc[["Adj.p-value"]]
+        )
+      )
+    }
+
+    if ("Mean" %in% names(volc)) {
+      volcano_node_data$Volcano_Mean <- suppressWarnings(
+        as.numeric(
+          volc$Mean
+        )
+      )
+    }
+
+    if ("GNPS_annotation" %in% names(volc)) {
+      volcano_node_data$GNPS_annotation <- clean_missing_text(
+        volc$GNPS_annotation
+      )
+    }
+
+    volcano_node_data <- volcano_node_data %>%
+      dplyr::filter(
+        !is.na(ClusterID),
+        nzchar(ClusterID)
+      ) %>%
+      dplyr::distinct(
+        ClusterID,
+        .keep_all = TRUE
+      )
+
+    node_data <- node_data %>%
+      dplyr::left_join(
+        volcano_node_data,
+        by = "ClusterID"
+      )
+
+    volcano_added <- TRUE
+  }
+
+  # Ensure optional columns always exist
+  if (!"Volcano_FC" %in% names(node_data)) {
+    node_data$Volcano_FC <- NA_real_
+  }
+
+  if (!"Volcano_FDR" %in% names(node_data)) {
+    node_data$Volcano_FDR <- NA_real_
+  }
+
+  if (!"Volcano_Mean" %in% names(node_data)) {
+    node_data$Volcano_Mean <- NA_real_
+  }
+
+  if (!"GNPS_annotation" %in% names(node_data)) {
+    node_data$GNPS_annotation <- NA_character_
+  }
+
+  format_network_number <- function(x, digits = 4) {
+
+    out <- rep(
+      "NA",
+      length(x)
+    )
+
+    ok <- is.finite(x)
+
+    out[ok] <- format(
+      signif(
+        x[ok],
+        digits
+      ),
+      scientific = FALSE,
+      trim = TRUE
+    )
+
+    out
+  }
+
+  sirius_text <- node_data$SIRIUS_values
+
+  sirius_text[
+    is.na(sirius_text) |
+      !nzchar(sirius_text)
+  ] <- "NA"
+
+  gnps_text <- node_data$GNPS_annotation
+
+  gnps_text[
+    is.na(gnps_text) |
+      !nzchar(gnps_text)
+  ] <- "NA"
+
+  node_data$Hover <- paste0(
+    "<b>Cluster ID:</b> ",
+    node_data$ClusterID,
+
+    "<br><b>ComponentIndex:</b> ",
+    selected_component,
+
+    "<br><b>Node degree:</b> ",
+    node_data$Degree,
+
+    "<br><b>",
+    input$stats_sirius_col,
+    ":</b> ",
+    sirius_text,
+
+    "<br><b>Selected class:</b> ",
+    ifelse(
+      node_data$Selected_class,
+      "Yes",
+      "No"
+    )
+  )
+
+  if (volcano_added) {
+
+    node_data$Hover <- paste0(
+      node_data$Hover,
+
+      "<br><b>FC:</b> ",
+      format_network_number(
+        node_data$Volcano_FC
+      ),
+
+      "<br><b>Adjusted p-value:</b> ",
+      format_network_number(
+        node_data$Volcano_FDR
+      ),
+
+      "<br><b>Mean intensity:</b> ",
+      format_network_number(
+        node_data$Volcano_Mean
+      ),
+
+      "<br><b>GNPS annotation:</b> ",
+      gnps_text
+    )
+  }
+
+  label_mode <- input$network_label_mode %||%
+    "selected"
+
+  node_data$Node_label <- dplyr::case_when(
+    label_mode == "all" ~ node_data$ClusterID,
+    label_mode == "selected" &
+      node_data$Selected_class ~ node_data$ClusterID,
+    TRUE ~ ""
+  )
+
+  # Create edge coordinates using the simplified graph
+  simplified_edges <- igraph::as_data_frame(
+    graph_object,
+    what = "edges"
+  ) %>%
+
+    dplyr::transmute(
+      ClusterID1 = as.character(from),
+      ClusterID2 = as.character(to)
+    )
+
+  edge_coordinates <- simplified_edges %>%
+
+    dplyr::left_join(
+      node_data %>%
+        dplyr::select(
+          ClusterID,
+          x1 = x,
+          y1 = y
+        ),
+      by = c(
+        "ClusterID1" = "ClusterID"
+      )
+    ) %>%
+
+    dplyr::left_join(
+      node_data %>%
+        dplyr::select(
+          ClusterID,
+          x2 = x,
+          y2 = y
+        ),
+      by = c(
+        "ClusterID2" = "ClusterID"
+      )
+    )
+
+  list(
+    component = selected_component,
+    graph = graph_object,
+    nodes = node_data,
+    edges = edge_coordinates,
+    node_count = igraph::vcount(graph_object),
+    edge_count = igraph::ecount(graph_object)
+  )
+})
+
+output$gnps_component_network <- plotly::renderPlotly({
+
+  network <- selected_component_network_data()
+
+  node_data <- network$nodes
+  edge_data <- network$edges
+
+  plot_object <- plotly::plot_ly(
+    source = "gnps_component_network"
+  )
+
+  # GNPS edges
+  plot_object <- plot_object %>%
+
+    plotly::add_segments(
+      data = edge_data,
+
+      x = ~x1,
+      y = ~y1,
+      xend = ~x2,
+      yend = ~y2,
+
+      inherit = FALSE,
+
+      line = list(
+        color = "rgba(130,130,130,0.55)",
+        width = 1
+      ),
+
+      hoverinfo = "skip",
+      showlegend = FALSE
+    )
+
+  node_types <- c(
+    "Selected class",
+    "Other SIRIUS annotation",
+    "No SIRIUS annotation"
+  )
+
+  node_colors <- c(
+    "Selected class" = "#E74C3C",
+    "Other SIRIUS annotation" = "#66CDAA",
+    "No SIRIUS annotation" = "#BDBDBD"
+  )
+
+  node_sizes <- c(
+    "Selected class" = 16,
+    "Other SIRIUS annotation" = 11,
+    "No SIRIUS annotation" = 9
+  )
+
+  for (current_type in node_types) {
+
+    current_nodes <- node_data %>%
+      dplyr::filter(
+        Node_type == current_type
+      )
+
+    if (!nrow(current_nodes)) {
+      next
+    }
+
+    plot_object <- plot_object %>%
+
+      plotly::add_trace(
+        data = current_nodes,
+
+        x = ~x,
+        y = ~y,
+
+        type = "scatter",
+        mode = "markers+text",
+
+        text = ~Node_label,
+        hovertext = ~Hover,
+        hoverinfo = "text",
+
+        key = ~ClusterID,
+
+        name = current_type,
+        inherit = FALSE,
+
+        textposition = "top center",
+
+        textfont = list(
+          size = 10,
+          color = "#222222"
+        ),
+
+        marker = list(
+          size = unname(
+            node_sizes[
+              current_type
+            ]
+          ),
+
+          color = unname(
+            node_colors[
+              current_type
+            ]
+          ),
+
+          line = list(
+            color = "#333333",
+            width = 1
+          )
+        )
+      )
+  }
+
+  plot_object %>%
+
+    plotly::layout(
+
+      title = list(
+        text = paste0(
+          "GNPS Component ",
+          network$component,
+          " — ",
+          network$node_count,
+          " nodes, ",
+          network$edge_count,
+          " edges"
+        )
+      ),
+
+      xaxis = list(
+        visible = FALSE,
+        showgrid = FALSE,
+        zeroline = FALSE
+      ),
+
+      yaxis = list(
+        visible = FALSE,
+        showgrid = FALSE,
+        zeroline = FALSE,
+        scaleanchor = "x",
+        scaleratio = 1
+      ),
+
+      hovermode = "closest",
+      dragmode = "pan",
+
+      legend = list(
+        orientation = "h",
+        x = 0,
+        y = -0.05
+      ),
+
+      margin = list(
+        l = 20,
+        r = 20,
+        b = 70,
+        t = 70
+      )
+    ) %>%
+
+    plotly::config(
+      displaylogo = FALSE,
+
+      modeBarButtonsToRemove = c(
+        "lasso2d",
+        "select2d"
+      )
+    )
+})
+
+output$gnps_network_node_details <- renderUI({
+
+  click <- plotly::event_data(
+    "plotly_click",
+    source = "gnps_component_network"
+  )
+
+  if (
+    is.null(click) ||
+    is.null(click$key) ||
+    !length(click$key)
+  ) {
+
+    return(
+      div(
+        class = "small-note",
+        style = "margin-top: 8px;",
+        "Click a network node to show its information."
+      )
+    )
+  }
+
+  network <- selected_component_network_data()
+
+  clicked_id <- as.character(
+    click$key[1]
+  )
+
+  row <- network$nodes %>%
+    dplyr::filter(
+      ClusterID == clicked_id
+    ) %>%
+    dplyr::slice(1)
+
+  if (!nrow(row)) {
+    return(NULL)
+  }
+
+  sirius_value <- row$SIRIUS_values[1]
+
+  if (
+    is.na(sirius_value) ||
+    !nzchar(sirius_value)
+  ) {
+    sirius_value <- "NA"
+  }
+
+  gnps_value <- row$GNPS_annotation[1]
+
+  if (
+    is.na(gnps_value) ||
+    !nzchar(gnps_value)
+  ) {
+    gnps_value <- "NA"
+  }
+
+  format_one <- function(x) {
+
+    if (
+      is.null(x) ||
+      !length(x) ||
+      is.na(x[1]) ||
+      !is.finite(x[1])
+    ) {
+      return("NA")
+    }
+
+    format(
+      signif(
+        x[1],
+        5
+      ),
+      scientific = FALSE,
+      trim = TRUE
+    )
+  }
+
+  div(
+    style = "
+      background:#ffffffcc;
+      padding:10px;
+      border-radius:10px;
+      border:1px solid #dddddd;
+      margin-top:10px;
+    ",
+
+    h4(
+      paste0(
+        "Selected network node: ",
+        clicked_id
+      )
+    ),
+
+    tags$ul(
+
+      tags$li(
+        strong("ComponentIndex: "),
+        network$component
+      ),
+
+      tags$li(
+        strong("Node degree: "),
+        row$Degree[1]
+      ),
+
+      tags$li(
+        strong(
+          paste0(
+            input$stats_sirius_col,
+            ": "
+          )
+        ),
+        sirius_value
+      ),
+
+      tags$li(
+        strong("Matches selected class: "),
+        ifelse(
+          isTRUE(row$Selected_class[1]),
+          "Yes",
+          "No"
+        )
+      ),
+
+      tags$li(
+        strong("FC: "),
+        format_one(
+          row$Volcano_FC
+        )
+      ),
+
+      tags$li(
+        strong("Adjusted p-value: "),
+        format_one(
+          row$Volcano_FDR
+        )
+      ),
+
+      tags$li(
+        strong("Mean intensity: "),
+        format_one(
+          row$Volcano_Mean
+        )
+      ),
+
+      tags$li(
+        strong("GNPS annotation: "),
+        gnps_value
+      )
+    )
+  )
+})
+
+output$gnps_network_section <- renderUI({
+
+  if (is.null(input$file_gnps_pairs)) {
+    return(NULL)
+  }
+
+  if (
+    is.null(input$network_component) ||
+    !nzchar(
+      as.character(
+        input$network_component
+      )
+    )
+  ) {
+
+    return(
+      tagList(
+        tags$hr(),
+
+        div(
+          class = "small-note",
+          paste0(
+            "Choose a SIRIUS class that occurs in a GNPS ",
+            "component to display its network."
+          )
+        )
+      )
+    )
+  }
+
+  tagList(
+
+    tags$hr(),
+
+    h3(
+      "Interactive selected GNPS component"
+    ),
+
+    div(
+      class = "small-note",
+      style = "margin-bottom: 8px;",
+
+      HTML(
+        paste0(
+          "<b>Red:</b> selected SIRIUS class &nbsp;|&nbsp; ",
+          "<b>Green:</b> another SIRIUS value &nbsp;|&nbsp; ",
+          "<b>Grey:</b> no value in the selected SIRIUS column"
+        )
+      )
+    ),
+
+    withSpinner(
+      plotlyOutput(
+        "gnps_component_network",
+        height = "650px"
+      ),
+      type = 8,
+      color = "#66CDAA"
+    ),
+
+    uiOutput(
+      "gnps_network_node_details"
+    )
+  )
 })
 
 output$selected_class_summary <- renderUI({
@@ -2669,7 +4415,8 @@ output$sirius_gnps_main <- renderUI({
     tags$hr(),
     uiOutput("selected_class_summary"),
     h3("Selected class distribution by GNPS ComponentIndex"),
-    withSpinner(DTOutput("selected_class_component_table"), type = 8, color = "#66CDAA")
+    withSpinner(DTOutput("selected_class_component_table"), type = 8, color = "#66CDAA"),
+    uiOutput("gnps_network_section")
   )
 })
 
@@ -2754,32 +4501,322 @@ output$sirius_gnps_main <- renderUI({
       incProgress(0.05, detail = "Joining mz/rt/id")
       volc <- volc %>% left_join(fmap, by = "Feature")
 
+      incProgress(
+  0.02,
+  detail = "Joining additional peak-table columns"
+)
+
+if (isTRUE(input$use_peak_extra_cols)) {
+
+  selected_peak_cols <- intersect(
+    input$peak_extra_cols %||% character(0),
+    names(built()$raw)
+  )
+
+  if (length(selected_peak_cols)) {
+
+    peak_raw <- as.data.frame(
+      built()$raw,
+      check.names = FALSE,
+      stringsAsFactors = FALSE
+    )
+
+    validate(
+      need(
+        nrow(peak_raw) == nrow(fmap),
+        paste0(
+          "Peak-table metadata could not be joined because ",
+          "the peak table and feature map have different row counts."
+        )
+      )
+    )
+
+    peak_colmap <- make_prefixed_colmap(
+      selected_peak_cols,
+      prefix = "Peak_"
+    )
+
+    peak_extra <- peak_raw[
+      ,
+      names(peak_colmap),
+      drop = FALSE
+    ]
+
+    names(peak_extra) <- unname(
+      peak_colmap
+    )
+
+    peak_extra$Feature <- as.character(
+      fmap$Feature
+    )
+
+    peak_extra <- peak_extra[
+      ,
+      c(
+        "Feature",
+        unname(peak_colmap)
+      ),
+      drop = FALSE
+    ]
+
+    volc <- volc %>%
+      dplyr::left_join(
+        peak_extra,
+        by = "Feature"
+      )
+  }
+}
+      
       # default annotation columns
-      volc$`NPC#class` <- "Not provided"
-      volc$`ClassyFire#class` <- "Not provided"
-      volc$GNPS_annotation <- "Not provided"
+      volc$`NPC#class` <- NA_character_
+      volc$`ClassyFire#class` <- NA_character_
+      volc$GNPS_annotation <- NA_character_
 
-      incProgress(0.05, detail = "Joining SIRIUS (optional)")
-      if (isTRUE(input$use_sirius) && !is.null(input$file_sirius)) {
-        s <- sirius_df()
-        req(input$sirius_idcol, input$sirius_npcol, input$sirius_cfcol)
+      incProgress(
+      0.05,
+      detail = "Joining SIRIUS (optional)"
+    )
 
-        ss <- s %>%
-          transmute(
-            id = as.character(.data[[input$sirius_idcol]]),
-            `NPC#class` = as.character(.data[[input$sirius_npcol]]),
-            `ClassyFire#class` = as.character(.data[[input$sirius_cfcol]])
-          )
+if (
+  isTRUE(input$use_sirius) &&
+  !is.null(input$file_sirius)
+) {
 
-        volc <- volc %>%
-          mutate(id = as.character(id)) %>%
-          left_join(ss, by = "id", suffix = c("", ".sirius")) %>%
-          mutate(
-            `NPC#class` = dplyr::coalesce(.data[["NPC#class.sirius"]], .data[["NPC#class"]]),
-            `ClassyFire#class` = dplyr::coalesce(.data[["ClassyFire#class.sirius"]], .data[["ClassyFire#class"]])
-          ) %>%
-          select(-any_of(c("NPC#class.sirius", "ClassyFire#class.sirius")))
+  s <- as.data.frame(
+    sirius_df(),
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+
+  req(
+    input$sirius_idcol,
+    input$sirius_npcol,
+    input$sirius_cfcol
+  )
+
+  validate(
+    need(
+      input$sirius_idcol %in% names(s),
+      "Selected SIRIUS Feature ID column was not found."
+    ),
+
+    need(
+      input$sirius_npcol %in% names(s),
+      "Selected SIRIUS NPC column was not found."
+    ),
+
+    need(
+      input$sirius_cfcol %in% names(s),
+      "Selected SIRIUS ClassyFire column was not found."
+    )
+  )
+
+  selected_sirius_extra <- character(0)
+
+  if (isTRUE(input$use_sirius_extra_cols)) {
+
+    selected_sirius_extra <- intersect(
+      input$sirius_extra_cols %||% character(0),
+      names(s)
+    )
+
+    selected_sirius_extra <- setdiff(
+      selected_sirius_extra,
+      c(
+        input$sirius_idcol,
+        input$sirius_npcol,
+        input$sirius_cfcol
+      )
+    )
+  }
+
+  sirius_colmap <- make_prefixed_colmap(
+    selected_sirius_extra,
+    prefix = "SIRIUS_"
+  )
+
+  # Build the core SIRIUS join table
+  ss <- data.frame(
+    id = trimws(
+      as.character(
+        s[[input$sirius_idcol]]
+      )
+    ),
+
+    `NPC#class` = clean_missing_text(
+      s[[input$sirius_npcol]]
+    ),
+
+    `ClassyFire#class` = clean_missing_text(
+      s[[input$sirius_cfcol]]
+    ),
+
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+
+  # Add selected additional SIRIUS columns.
+  # Numeric columns remain numeric.
+  if (length(sirius_colmap)) {
+
+    for (original_name in names(sirius_colmap)) {
+
+      output_name <- sirius_colmap[[
+        original_name
+      ]]
+
+      value <- s[[
+        original_name
+      ]]
+
+      if (
+        is.character(value) ||
+        is.factor(value)
+      ) {
+        value <- clean_missing_text(
+          value
+        )
       }
+
+      ss[[
+        output_name
+      ]] <- value
+    }
+  }
+
+  ss <- ss %>%
+    dplyr::filter(
+      !is.na(id),
+      nzchar(id)
+    )
+
+  # Prevent duplicate SIRIUS IDs from multiplying volcano rows.
+  # The first row is retained if duplicate IDs are present.
+  duplicate_count <- sum(
+    duplicated(ss$id)
+  )
+
+  if (duplicate_count > 0) {
+
+    showNotification(
+      paste0(
+        "SIRIUS contains ",
+        duplicate_count,
+        " duplicated mapping ID row(s). ",
+        "The first row for each ID was retained."
+      ),
+      type = "warning",
+      duration = 7
+    )
+
+    ss <- ss %>%
+      dplyr::distinct(
+        id,
+        .keep_all = TRUE
+      )
+  }
+
+peak_table_ids <- unique(
+  trimws(
+    as.character(
+      volc$id
+    )
+  )
+)
+
+sirius_ids <- unique(
+  trimws(
+    as.character(
+      ss$id
+    )
+  )
+)
+
+peak_table_ids <- peak_table_ids[
+  !is.na(peak_table_ids) &
+    nzchar(peak_table_ids)
+]
+
+sirius_ids <- sirius_ids[
+  !is.na(sirius_ids) &
+    nzchar(sirius_ids)
+]
+
+matched_sirius_ids <- sum(
+  peak_table_ids %in% sirius_ids
+)
+
+volc <- volc %>%
+
+  dplyr::mutate(
+    id = trimws(
+      as.character(id)
+    )
+  ) %>%
+
+  dplyr::left_join(
+    ss,
+    by = "id",
+    suffix = c("", ".sirius")
+  ) %>%
+
+  dplyr::mutate(
+
+    `NPC#class` = dplyr::coalesce(
+      .data[["NPC#class.sirius"]],
+      .data[["NPC#class"]]
+    ),
+
+    `ClassyFire#class` = dplyr::coalesce(
+      .data[["ClassyFire#class.sirius"]],
+      .data[["ClassyFire#class"]]
+    )
+  ) %>%
+
+  dplyr::select(
+    -dplyr::any_of(
+      c(
+        "NPC#class.sirius",
+        "ClassyFire#class.sirius"
+      )
+    )
+  )
+
+if (matched_sirius_ids == 0) {
+
+  showNotification(
+    paste0(
+      "SIRIUS summary was uploaded, but no IDs matched. ",
+      "Check that the peak-table Row ID column and selected ",
+      "SIRIUS Feature ID column contain the same values."
+    ),
+    type = "warning",
+    duration = 8
+  )
+
+} else {
+
+  showNotification(
+    paste0(
+      "SIRIUS annotation joined successfully: ",
+      format(
+        matched_sirius_ids,
+        big.mark = ",",
+        scientific = FALSE
+      ),
+      " of ",
+      format(
+        length(peak_table_ids),
+        big.mark = ",",
+        scientific = FALSE
+      ),
+      " unique peak-table IDs matched."
+    ),
+    type = "message",
+    duration = 6
+  )
+}
+}
 
 incProgress(
   0.05,
@@ -2791,7 +4828,11 @@ if (
   !is.null(input$file_gnps_annotation)
 ) {
 
-  g <- gnps_annotation_df()
+  g <- as.data.frame(
+    gnps_annotation_df(),
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
 
   req(
     input$gnps_annotation_idcol,
@@ -2806,40 +4847,53 @@ if (
 
     need(
       input$gnps_annotation_col %in% names(g),
-      "Selected GNPS annotation column was not found."
+      "Selected primary GNPS annotation column was not found."
     )
   )
 
+  selected_gnps_extra <- character(0)
 
-  gnps_join <- g %>%
-    dplyr::transmute(
+  if (isTRUE(input$use_gnps_extra_cols)) {
 
-      id = trimws(
-        as.character(
-          .data[[input$gnps_annotation_idcol]]
-        )
-      ),
+    selected_gnps_extra <- intersect(
+      input$gnps_extra_cols %||% character(0),
+      names(g)
+    )
 
-      GNPS_annotation = trimws(
-        as.character(
-          .data[[input$gnps_annotation_col]]
-        )
+    selected_gnps_extra <- setdiff(
+      selected_gnps_extra,
+      c(
+        input$gnps_annotation_idcol,
+        input$gnps_annotation_col
       )
-    ) %>%
+    )
+  }
+
+  gnps_colmap <- make_prefixed_colmap(
+    selected_gnps_extra,
+    prefix = "GNPS_"
+  )
+
+  gnps_primary <- data.frame(
+    id = trimws(
+      as.character(
+        g[[input$gnps_annotation_idcol]]
+      )
+    ),
+
+    GNPS_annotation = clean_missing_text(
+      g[[input$gnps_annotation_col]]
+    ),
+
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  ) %>%
 
     dplyr::filter(
       !is.na(id),
       nzchar(id)
     ) %>%
 
-    dplyr::mutate(
-      GNPS_annotation = dplyr::na_if(
-        GNPS_annotation,
-        ""
-      )
-    )
-
-  gnps_join <- gnps_join %>%
     dplyr::group_by(id) %>%
 
     dplyr::summarise(
@@ -2848,12 +4902,11 @@ if (
 
         values <- unique(
           GNPS_annotation[
-            !is.na(GNPS_annotation) &
-              nzchar(GNPS_annotation)
+            !is.na(GNPS_annotation)
           ]
         )
 
-        if (length(values) > 0) {
+        if (length(values)) {
           paste(
             values,
             collapse = " | "
@@ -2866,17 +4919,119 @@ if (
       .groups = "drop"
     )
 
-  peak_table_ids <- unique(
-    trimws(
-      as.character(
-        volc$id
+  gnps_extra <- NULL
+
+  if (length(gnps_colmap)) {
+
+    gnps_extra <- data.frame(
+      id = trimws(
+        as.character(
+          g[[input$gnps_annotation_idcol]]
+        )
+      ),
+      check.names = FALSE,
+      stringsAsFactors = FALSE
+    )
+
+    for (original_name in names(gnps_colmap)) {
+
+      output_name <- gnps_colmap[[
+        original_name
+      ]]
+
+      value <- g[[
+        original_name
+      ]]
+
+      # Convert empty character values to real NA
+      if (
+        is.character(value) ||
+        is.factor(value)
+      ) {
+        value <- clean_missing_text(
+          value
+        )
+      }
+
+      # Numeric GNPS columns remain numeric
+      gnps_extra[[
+        output_name
+      ]] <- value
+    }
+
+    gnps_extra <- gnps_extra %>%
+      dplyr::filter(
+        !is.na(id),
+        nzchar(id)
       )
+
+    duplicate_extra_ids <- sum(
+      duplicated(gnps_extra$id)
+    )
+
+    if (duplicate_extra_ids > 0) {
+
+      showNotification(
+        paste0(
+          "GNPS contains ",
+          duplicate_extra_ids,
+          " duplicated ID row(s). ",
+          "The primary annotations were combined, while the first row ",
+          "was retained for each additional GNPS column."
+        ),
+        type = "warning",
+        duration = 8
+      )
+    }
+
+    gnps_extra <- gnps_extra %>%
+      dplyr::distinct(
+        id,
+        .keep_all = TRUE
+      )
+  }
+
+  # Combine primary and additional GNPS columns
+  gnps_join <- gnps_primary
+
+  if (!is.null(gnps_extra)) {
+
+    gnps_join <- gnps_join %>%
+      dplyr::left_join(
+        gnps_extra,
+        by = "id"
+      )
+  }
+
+  peak_table_ids <- unique(
+  trimws(
+    as.character(
+      volc$id
     )
   )
+)
 
-  matched_gnps_ids <- sum(
-    peak_table_ids %in% gnps_join$id
+peak_table_ids <- peak_table_ids[
+  !is.na(peak_table_ids) &
+    nzchar(peak_table_ids)
+]
+
+gnps_ids <- unique(
+  trimws(
+    as.character(
+      gnps_join$id
+    )
   )
+)
+
+gnps_ids <- gnps_ids[
+  !is.na(gnps_ids) &
+    nzchar(gnps_ids)
+]
+
+matched_gnps_ids <- sum(
+  peak_table_ids %in% gnps_ids
+)
 
   volc <- volc %>%
 
@@ -2920,16 +5075,27 @@ if (
   } else {
 
     showNotification(
-      paste0(
-        "GNPS annotation joined successfully: ",
-        matched_gnps_ids,
-        " unique peak-table IDs matched."
-      ),
-      type = "message",
-      duration = 5
-    )
+  paste0(
+    "GNPS annotation joined successfully: ",
+    format(
+      matched_gnps_ids,
+      big.mark = ",",
+      scientific = FALSE
+    ),
+    " of ",
+    format(
+      length(peak_table_ids),
+      big.mark = ",",
+      scientific = FALSE
+    ),
+    " unique peak-table IDs matched."
+  ),
+  type = "message",
+  duration = 6
+)
   }
 }
+
       volc <- volc %>%
         mutate(
           mz = round(mz, 6),
@@ -3039,10 +5205,20 @@ if (
   dd <- rv$volcano
 
   clean_choices <- function(x) {
-    x <- trimws(as.character(x))
-    x <- x[!is.na(x) & nzchar(x) & x != "Not provided"]
-    sort(unique(x))
-  }
+
+  x <- clean_missing_text(
+    x
+  )
+
+  x <- x[
+    !is.na(x) &
+      nzchar(x)
+  ]
+
+  sort(
+    unique(x)
+  )
+}
 
   list(
     npc = clean_choices(dd$`NPC#class`),
@@ -3294,7 +5470,7 @@ conditionalPanel(
   
     dd <- rv$volcano
     pcut <- suppressWarnings(as.numeric(input$sig_p_cutoff %||% 0.05))
-    if (!is.finite(pcut) || pcut <= 0 || pcut > 1) pcut <- 0.05
+    if (!is.finite(pcut) || pcut < 0 || pcut > 1) pcut <- 0.05
     
     fcut <- suppressWarnings(as.numeric(input$fc_thr %||% 1))
     if (!is.finite(fcut) || fcut < 0) fcut <- 1
@@ -3578,6 +5754,126 @@ if (!use_mean_y) {
     "NA"
   }
 
+  peak_detail_map <- make_prefixed_colmap(
+
+  if (isTRUE(input$use_peak_extra_cols)) {
+    input$peak_extra_cols %||% character(0)
+  } else {
+    character(0)
+  },
+
+  prefix = "Peak_"
+)
+
+sirius_detail_map <- make_prefixed_colmap(
+
+  if (
+    isTRUE(input$use_sirius) &&
+    isTRUE(input$use_sirius_extra_cols)
+  ) {
+    input$sirius_extra_cols %||% character(0)
+  } else {
+    character(0)
+  },
+
+  prefix = "SIRIUS_"
+)
+
+gnps_detail_map <- make_prefixed_colmap(
+
+  if (
+    isTRUE(input$use_gnps_annotation) &&
+    isTRUE(input$use_gnps_extra_cols)
+  ) {
+    input$gnps_extra_cols %||% character(0)
+  } else {
+    character(0)
+  },
+
+  prefix = "GNPS_"
+)
+
+detail_labels <- c(
+
+  stats::setNames(
+    paste0(
+      "Peak table: ",
+      names(peak_detail_map)
+    ),
+    unname(peak_detail_map)
+  ),
+
+  stats::setNames(
+    paste0(
+      "SIRIUS: ",
+      names(sirius_detail_map)
+    ),
+    unname(sirius_detail_map)
+  ),
+
+  stats::setNames(
+    paste0(
+      "GNPS: ",
+      names(gnps_detail_map)
+    ),
+    unname(gnps_detail_map)
+  )
+)
+
+detail_cols <- intersect(
+  names(detail_labels),
+  names(row)
+)
+
+additional_details_ui <- NULL
+
+if (length(detail_cols)) {
+
+  additional_details_ui <- div(
+
+    tags$hr(),
+
+    tags$h5(
+      style = "
+        font-weight: bold;
+        color: #2c3e50;
+        margin-bottom: 10px;
+      ",
+      "Additional information"
+    ),
+
+    lapply(
+      detail_cols,
+      function(column_name) {
+
+        div(
+          style = "
+            display: grid;
+            grid-template-columns: minmax(180px, 35%) 1fr;
+            gap: 10px;
+            padding: 5px 0;
+            border-bottom: 1px solid #eeeeee;
+            overflow-wrap: anywhere;
+          ",
+
+          tags$strong(
+            paste0(
+              detail_labels[[column_name]],
+              ":"
+            )
+          ),
+
+          tags$span(
+            format_extra_value(
+              row[[column_name]]
+            )
+          )
+        )
+      }
+    )
+  )
+}
+  
   tagList(
     div(
       style = "
@@ -3647,11 +5943,7 @@ if (!use_mean_y) {
         )
       ),
 
-      div(
-        class = "small-note",
-        style = "margin-top: 8px;",
-        "Click a value to select it, then press Ctrl+C to copy."
-      )
+      additional_details_ui
     ),
 
     plotlyOutput(
