@@ -1,5 +1,5 @@
-[![Project Status: Inactive – The project has reached a stable, usable state but is no longer being actively developed; support/maintenance will be provided as time allows.](https://www.repostatus.org/badges/latest/inactive.svg)](https://www.repostatus.org/#inactive)
-[![](https://img.shields.io/badge/R≥4.1.2-5fb9ed.svg?style=flat&logo=r&logoColor=white?)](https://cran.r-project.org/index.html)
+[![Project Status:](https://www.repostatus.org/badges/latest/active.svg)](https://www.repostatus.org/#active)
+[![](https://img.shields.io/badge/R≥4.5.0-5fb9ed.svg?style=flat&logo=r&logoColor=white?)](https://cran.r-project.org/index.html)
 [![License](https://img.shields.io/badge/GPLv3-indianred.svg?style=flat&maxAge=2678400)](https://choosealicense.com/licenses/gpl-3.0/)
 # Metabocano <img src="inst/www/sticker.png" align="right" height="180" width="160">
 
@@ -41,7 +41,7 @@ metabocano::run_metabocano()
 <br>
 
 > [!IMPORTANT]
->The [App's script](https://github.com/plyush1993/Metabocano/blob/main/app.R) was compiled using [R version 4.1.2](https://cran.r-project.org/bin/windows/base/old/4.1.2/) 
+>The App was compiled using [`R version 4.5.0`](https://cran.r-project.org/bin/windows/base/old/4.5.0/) 
 <br>
 
 ### Contact :mailbox_with_mail:
