@@ -2933,13 +2933,29 @@ output$sirius_gnps_sidebar <- renderUI({
     ),
 
     selectInput(
-      "stats_sirius_col",
-      "SIRIUS column for frequency statistics:",
-      choices = s_cols,
-      selected = default_ann
-    ),
+  "stats_sirius_col",
+  "SIRIUS column for frequency statistics:",
+  choices = s_cols,
+  selected = default_ann
+),
 
-    uiOutput("stats_class_picker"),
+materialSwitch(
+  inputId = "prune_sirius_to_peak",
+  label = "Restrict SIRIUS statistics to uploaded peak table",
+  value = TRUE,
+  status = "success",
+  width = "auto"
+),
+
+uiOutput(
+  "sirius_pruning_notice"
+),
+
+uiOutput(
+  "sirius_peak_id_picker"
+),
+
+uiOutput("stats_class_picker"),
 
     tags$hr(),
 
@@ -2961,50 +2977,147 @@ output$sirius_gnps_sidebar <- renderUI({
   )
 })
 
-output$gnps_pickers_ui <- renderUI({
-  req(gnps_pairs_df())
+output$sirius_pruning_notice <- renderUI({
 
-  g_cols <- names(gnps_pairs_df())
+  if (!isTRUE(input$prune_sirius_to_peak)) {
+    return(NULL)
+  }
 
-  raw_cols <- tryCatch(names(raw_df()), error = function(e) character(0))
+  if (!is.null(input$file_data)) {
+    return(NULL)
+  }
 
-  default_peak <- if (!is.null(input$row_id_col) && input$row_id_col %in% raw_cols) {
-    input$row_id_col
+})
+
+output$sirius_peak_id_picker <- renderUI({
+
+    if (!isTRUE(input$prune_sirius_to_peak)) {
+    return(NULL)
+  }
+
+  if (is.null(input$file_data)) {
+    return(NULL)
+  }
+  
+  req(raw_df())
+
+  raw_cols <- names(
+    raw_df()
+  )
+
+  validate(
+    need(
+      length(raw_cols) > 0,
+      "No peak-table columns were detected."
+    )
+  )
+
+  selected_row_id <- input$row_id_col %||%
+    ""
+
+  default_peak_id <- if (
+    identical(
+      selected_row_id,
+      "<Auto-generate>"
+    )
+  ) {
+    "__auto__"
+  } else if (
+    selected_row_id %in% raw_cols
+  ) {
+    selected_row_id
   } else {
     guess_col_ci(
       raw_cols,
-      c("row ID", "row id", "id", "feature_id"),
-      default = "__none__"
+      c(
+        "row ID",
+        "row id",
+        "id",
+        "feature_id",
+        "feature id"
+      ),
+      default = raw_cols[1]
     )
   }
 
+pickerInput(
+  inputId = "sirius_peak_id_col",
+  label = "Peak-table column used for SIRIUS pruning:",
+
+  choices = c(
+    "Auto-generated feature ID (row number)" = "__auto__",
+    raw_cols
+  ),
+
+  selected = default_peak_id,
+  multiple = FALSE,
+
+  options = list(
+    `live-search` = TRUE,
+    `size` = 10,
+    `style` = "btn-success",
+    `none-selected-text` = "Choose a peak-table ID column"
+  )
+)
+})
+
+output$gnps_pickers_ui <- renderUI({
+
+  req(
+    gnps_pairs_df()
+  )
+
+  g_cols <- names(
+    gnps_pairs_df()
+  )
+
   tagList(
+
     selectInput(
       "gnps_cluster1_col",
       "GNPS ClusterID1 column:",
       choices = g_cols,
-      selected = guess_col_ci(g_cols, c("ClusterID1", "CLUSTERID1"), g_cols[1])
+      selected = guess_col_ci(
+        g_cols,
+        c(
+          "ClusterID1",
+          "CLUSTERID1"
+        ),
+        g_cols[1]
+      )
     ),
 
     selectInput(
       "gnps_cluster2_col",
       "GNPS ClusterID2 column:",
       choices = g_cols,
-      selected = guess_col_ci(g_cols, c("ClusterID2", "CLUSTERID2"), g_cols[min(2, length(g_cols))])
+      selected = guess_col_ci(
+        g_cols,
+        c(
+          "ClusterID2",
+          "CLUSTERID2"
+        ),
+        g_cols[
+          min(
+            2,
+            length(g_cols)
+          )
+        ]
+      )
     ),
 
     selectInput(
       "gnps_component_col",
       "GNPS ComponentIndex column:",
       choices = g_cols,
-      selected = guess_col_ci(g_cols, c("ComponentIndex", "component"), g_cols[1])
-    ),
-
-    selectInput(
-      "gnps_peak_id_col",
-      "Optional peak-table pruning by Peak ID:",
-      choices = c("Do not use peak-table ID matching" = "__none__", raw_cols),
-      selected = "__none__"
+      selected = guess_col_ci(
+        g_cols,
+        c(
+          "ComponentIndex",
+          "component"
+        ),
+        g_cols[1]
+      )
     )
   )
 })
@@ -3012,6 +3125,17 @@ output$gnps_pickers_ui <- renderUI({
 sirius_stats_data <- reactive({
   req(sirius_df(), input$stats_sirius_id_col, input$stats_sirius_col)
 
+  validate(
+    need(
+      !isTRUE(input$prune_sirius_to_peak) ||
+        !is.null(input$file_data),
+      paste0(
+        "SIRIUS pruning is enabled, but no peak table is uploaded. ",
+        "Upload a peak table or switch off SIRIUS pruning."
+      )
+    )
+  )
+  
   s <- as.data.frame(
     sirius_df(),
     check.names = FALSE,
@@ -3029,7 +3153,7 @@ sirius_stats_data <- reactive({
   ) %>%
     dplyr::filter(nzchar(SIRIUS_ID), !is.na(Annotation))
 
-  keep_ids <- selected_peak_ids_for_gnps()
+  keep_ids <- selected_peak_ids_for_sirius()
 
   if (!is.null(keep_ids) && length(keep_ids)) {
     out <- out %>%
@@ -3097,12 +3221,17 @@ output$sirius_frequency_table <- DT::renderDT({
   )
 })
 
-selected_peak_ids_for_gnps <- reactive({
-  if (is.null(input$gnps_peak_id_col) || identical(input$gnps_peak_id_col, "__none__")) {
+selected_peak_ids_for_sirius <- reactive({
+
+  # Switch off means: use all SIRIUS rows.
+  if (!isTRUE(input$prune_sirius_to_peak)) {
     return(NULL)
   }
 
-  req(raw_df())
+  req(
+    raw_df(),
+    input$sirius_peak_id_col
+  )
 
   raw <- as.data.frame(
     raw_df(),
@@ -3110,12 +3239,47 @@ selected_peak_ids_for_gnps <- reactive({
     stringsAsFactors = FALSE
   )
 
-  validate(
-    need(input$gnps_peak_id_col %in% names(raw), "Selected peak-table ID column was not found.")
+  selected_col <- as.character(
+    input$sirius_peak_id_col
   )
 
-  ids <- trimws(as.character(raw[[input$gnps_peak_id_col]]))
-  ids[nzchar(ids)]
+  ids <- if (
+    identical(
+      selected_col,
+      "__auto__"
+    )
+  ) {
+
+    as.character(
+      seq_len(
+        nrow(raw)
+      )
+    )
+
+  } else {
+
+    validate(
+      need(
+        selected_col %in% names(raw),
+        "Selected peak-table feature ID column was not found."
+      )
+    )
+
+    trimws(
+      as.character(
+        raw[[selected_col]]
+      )
+    )
+  }
+
+  ids <- ids[
+    !is.na(ids) &
+      nzchar(ids)
+  ]
+
+  unique(
+    ids
+  )
 })
 
 gnps_component_map <- reactive({
@@ -3155,13 +3319,6 @@ gnps_component_map <- reactive({
     ) %>%
     dplyr::filter(nzchar(ClusterID), nzchar(ComponentIndex)) %>%
     dplyr::distinct(ComponentIndex, ClusterID)
-
-  keep_ids <- selected_peak_ids_for_gnps()
-
-  if (!is.null(keep_ids) && length(keep_ids)) {
-    out <- out %>%
-      dplyr::filter(ClusterID %in% keep_ids)
-  }
 
   out
 })
@@ -3235,16 +3392,6 @@ gnps_component_edges <- reactive({
     )
 
   # Optional pruning using the selected peak-table ID column
-  keep_ids <- selected_peak_ids_for_gnps()
-
-  if (!is.null(keep_ids) && length(keep_ids)) {
-
-    edges <- edges %>%
-      dplyr::filter(
-        ClusterID1 %in% keep_ids,
-        ClusterID2 %in% keep_ids
-      )
-  }
 
   edges
 })
@@ -3401,8 +3548,8 @@ output$network_component_picker <- renderUI({
         div(
           class = "small-note",
           paste0(
-            "No component containing the selected class has ",
-            "surviving edges after optional peak-table pruning."
+            "No GNPS component containing the selected class ",
+"has displayable edges."
           )
         )
       )
