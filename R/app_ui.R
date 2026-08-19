@@ -274,15 +274,41 @@ tags$head(tags$style(HTML("
           helpText(HTML("<i class='fa fa-info-circle'></i> Need data to test? Download example datasets from our <a href='https://github.com/plyush1993/Metabocano' target='_blank'>GitHub</a>.")),
           uiOutput("col_pickers"),
 
-          selectizeInput(
-            "sample_keywords",
-            "Sample column keywords (pick/add multiple):",
-            choices  = c(".mzML", ".mzXML", ".raw", ".d", ".wiff", ".lcd", "Peak area", "Area", "_Area"),
-            selected = c(".mzML", ".mzXML"),
-            multiple = TRUE,
-            options  = list(create = TRUE, createOnBlur = TRUE,
-                            placeholder = "Type to add keyword and press Enter")
-          ),
+          radioButtons(
+  "sample_mode",
+  "How to define sample columns?",
+  choices = c(
+    "Auto-detect numeric sample columns" = "auto",
+    "By keyword match" = "kws",
+    "Pick columns manually" = "manual"
+  ),
+  selected = "kws"
+),
+
+conditionalPanel(
+  condition = "input.sample_mode == 'kws'",
+
+  selectizeInput(
+    "sample_keywords",
+    "Sample column keywords (pick/add multiple):",
+    choices = c(
+      ".mzML", ".mzXML", ".raw", ".d", ".wiff", ".lcd",
+      "Peak area", "Area", "_Area"
+    ),
+    selected = c(".mzML", ".mzXML"),
+    multiple = TRUE,
+    options = list(
+      create = TRUE,
+      createOnBlur = TRUE,
+      placeholder = "Type to add keyword and press Enter"
+    )
+  )
+),
+
+conditionalPanel(
+  condition = "input.sample_mode == 'manual'",
+  uiOutput("manual_sample_cols_ui")
+),
 
           tags$hr(),
           h3(class = "highlight", "Labels"),
@@ -392,9 +418,50 @@ conditionalPanel(
 ),
 
 checkboxInput("show_labels_table", "Show labels table", TRUE),
-tags$hr(),
 
           h3(class = "highlight", "Join with Annotation"),
+      div(
+  style = "
+    display: flex;
+    align-items: center;
+    margin-bottom: 10px;
+  ",
+
+  materialSwitch(
+    inputId = "use_peak_extra_cols",
+    label = "Join with other peak table column",
+    value = FALSE,
+    status = "success",
+    width = "auto"
+  ),
+
+  actionButton(
+          inputId = "btnAD",
+          label = "?",
+          class = "btn-xs",
+          style = "font-weight: bold; margin-left: 10px; margin-top: -20px;"
+        )
+),
+
+bsTooltip(
+        id = "btnAD",
+        title = paste0(
+    "Selected columns will be added to the downloaded volcano table ",
+      "and displayed after clicking a volcano point."
+  ),
+        placement = "right",
+        trigger = "click",
+        options = list(container = "body")
+      ),
+
+conditionalPanel(
+  condition = "input.use_peak_extra_cols == true",
+
+  uiOutput(
+    "peak_extra_cols_ui"
+  )
+),
+
       div(
         style = "display: flex; align-items: center; margin-bottom: 15px;",
 
@@ -429,10 +496,16 @@ tags$hr(),
       ),
 
       conditionalPanel(
-        condition = "input.use_sirius",
-        fileInput("file_sirius", "Upload SIRIUS .csv output", accept = ".csv"),
-        uiOutput("sirius_pickers")
-      ),
+  condition = "input.use_sirius",
+
+  fileInput(
+    "file_sirius",
+    "Upload SIRIUS output (.csv/.tsv/.txt)",
+    accept = c(".csv", ".tsv", ".txt")
+  ),
+
+  uiOutput("sirius_pickers")
+),
 
 div(
   style = "display: flex; align-items: center; margin-bottom: 15px;",

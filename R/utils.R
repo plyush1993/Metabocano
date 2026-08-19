@@ -4,6 +4,98 @@
   if (is.null(x) || length(x) == 0 || (length(x) == 1 && is.na(x))) y else x
 }
 
+clean_missing_text <- function(x) {
+
+  x <- trimws(
+    as.character(x)
+  )
+
+  bad <- (
+    is.na(x) |
+      !nzchar(x) |
+      tolower(x) %in% c(
+        "na",
+        "nan",
+        "null",
+        "not provided"
+      )
+  )
+
+  x[bad] <- NA_character_
+
+  x
+}
+
+make_prefixed_colmap <- function(cols, prefix) {
+
+  cols <- as.character(
+    cols %||% character(0)
+  )
+
+  cols <- cols[
+    !is.na(cols) &
+      nzchar(cols)
+  ]
+
+  if (!length(cols)) {
+    return(
+      stats::setNames(
+        character(0),
+        character(0)
+      )
+    )
+  }
+
+  output_names <- make.unique(
+    paste0(prefix, cols),
+    sep = "_"
+  )
+
+  stats::setNames(
+    output_names,
+    cols
+  )
+}
+
+format_extra_value <- function(x) {
+
+  if (is.null(x) || !length(x)) {
+    return("NA")
+  }
+
+  value <- x[[1]]
+
+  if (length(value) == 0 || is.na(value)) {
+    return("NA")
+  }
+
+  if (is.numeric(value)) {
+
+    if (!is.finite(value)) {
+      return("NA")
+    }
+
+    return(
+      format(
+        value,
+        digits = 12,
+        scientific = FALSE,
+        trim = TRUE
+      )
+    )
+  }
+
+  value <- trimws(
+    as.character(value)
+  )
+
+  if (!nzchar(value)) {
+    "NA"
+  } else {
+    value
+  }
+}
+
 read_msdial_robust <- function(path) {
   max_cols <- NA
   try({
@@ -92,9 +184,26 @@ labels_from_sample_names_or_raw <- function(sample_names,
   idx <- as.integer(token_index %||% 2)
 
   parts <- strsplit(sn, sep, fixed = TRUE)
-  ok <- vapply(parts, function(z) length(z) >= idx, logical(1))
+ok <- vapply(parts, function(z) length(z) >= idx, logical(1))
 
-  labs <- vapply(seq_along(parts), function(i) {
+if (!all(ok)) {
+  msg <- sprintf(
+    "Warning: Token %d missing in some sample names. Falling back to the full sample name.",
+    idx
+  )
+
+  warning(msg)
+
+  if (!is.null(shiny::getDefaultReactiveDomain())) {
+    shiny::showNotification(
+      msg,
+      type = "warning",
+      duration = 8
+    )
+  }
+}
+
+labs <- vapply(seq_along(parts), function(i) {
     if (ok[i] && nzchar(parts[[i]][[idx]])) {
       parts[[i]][[idx]]
     } else {
@@ -310,38 +419,246 @@ guess_col <- function(cols, candidates) {
   NULL
 }
 
-safe_ttest_p <- function(x, g, paired = FALSE, var.equal = FALSE) {
-  x <- as.numeric(x)
-  g <- as.factor(g)
-  if (length(unique(g)) != 2) return(1)
-  a <- x[g == levels(g)[1]]
-  b <- x[g == levels(g)[2]]
-  a <- a[is.finite(a)]
-  b <- b[is.finite(b)]
-  if (length(a) < 2 || length(b) < 2) return(1)
-  if (stats::sd(a) == 0 && stats::sd(b) == 0) return(1)
-  out <- try(stats::t.test(x ~ g, paired = paired, var.equal = var.equal)$p.value, silent = TRUE)
-  if (inherits(out, "try-error") || !is.finite(out)) 1 else as.numeric(out)
+safe_ttest_p <- function(
+    x,
+    g,
+    paired = FALSE,
+    var.equal = FALSE
+) {
+
+  x <- suppressWarnings(
+    as.numeric(x)
+  )
+
+  g <- droplevels(
+    as.factor(g)
+  )
+
+  # Remove observations without a valid group
+  valid_group <- !is.na(g)
+
+  x <- x[valid_group]
+  g <- droplevels(
+    g[valid_group]
+  )
+
+  if (nlevels(g) != 2) {
+    return(NA_real_)
+  }
+
+  group_levels <- levels(g)
+
+  a <- x[
+    g == group_levels[1]
+  ]
+
+  b <- x[
+    g == group_levels[2]
+  ]
+
+  if (isTRUE(paired)) {
+
+    # Paired samples must have equal lengths
+    if (length(a) != length(b)) {
+      return(NA_real_)
+    }
+
+    # Remove missing values pairwise
+    complete_pairs <- is.finite(a) &
+      is.finite(b)
+
+    a <- a[complete_pairs]
+    b <- b[complete_pairs]
+
+    if (length(a) < 2) {
+      return(NA_real_)
+    }
+
+    p_value <- tryCatch(
+
+      stats::t.test(
+        x = a,
+        y = b,
+        paired = TRUE
+      )$p.value,
+
+      error = function(e) {
+        NA_real_
+      }
+    )
+
+  } else {
+
+    # For unpaired tests, remove missing values independently
+    a <- a[
+      is.finite(a)
+    ]
+
+    b <- b[
+      is.finite(b)
+    ]
+
+    if (
+      length(a) < 2 ||
+      length(b) < 2
+    ) {
+      return(NA_real_)
+    }
+
+    p_value <- tryCatch(
+
+      stats::t.test(
+        x = a,
+        y = b,
+        paired = FALSE,
+        var.equal = isTRUE(var.equal)
+      )$p.value,
+
+      error = function(e) {
+        NA_real_
+      }
+    )
+  }
+
+  if (
+    length(p_value) != 1 ||
+    !is.finite(p_value)
+  ) {
+    return(NA_real_)
+  }
+
+  as.numeric(p_value)
 }
 
-safe_wilcox_p <- function(x, g, paired = FALSE) {
-  x <- as.numeric(x)
-  g <- as.factor(g)
-  if (length(unique(g)) != 2) return(1)
-  a <- x[g == levels(g)[1]]
-  b <- x[g == levels(g)[2]]
-  a <- a[is.finite(a)]
-  b <- b[is.finite(b)]
-  if (length(a) < 1 || length(b) < 1) return(1)
-  out <- try(stats::wilcox.test(x ~ g, paired = paired)$p.value, silent = TRUE)
-  if (inherits(out, "try-error") || !is.finite(out)) 1 else as.numeric(out)
+safe_wilcox_p <- function(
+    x,
+    g,
+    paired = FALSE
+) {
+
+  x <- suppressWarnings(
+    as.numeric(x)
+  )
+
+  g <- droplevels(
+    as.factor(g)
+  )
+
+  # Remove observations without a valid group
+  valid_group <- !is.na(g)
+
+  x <- x[valid_group]
+  g <- droplevels(
+    g[valid_group]
+  )
+
+  if (nlevels(g) != 2) {
+    return(NA_real_)
+  }
+
+  group_levels <- levels(g)
+
+  a <- x[
+    g == group_levels[1]
+  ]
+
+  b <- x[
+    g == group_levels[2]
+  ]
+
+  if (isTRUE(paired)) {
+
+    # Paired samples must have equal lengths
+    if (length(a) != length(b)) {
+      return(NA_real_)
+    }
+
+    # Remove missing values pairwise
+    complete_pairs <- is.finite(a) &
+      is.finite(b)
+
+    a <- a[complete_pairs]
+    b <- b[complete_pairs]
+
+    if (length(a) < 1) {
+      return(NA_real_)
+    }
+
+    p_value <- tryCatch(
+
+      suppressWarnings(
+        stats::wilcox.test(
+          x = a,
+          y = b,
+          paired = TRUE,
+
+          # Explicit approximation gives more consistent
+          # behavior across different R versions
+          exact = FALSE,
+          correct = TRUE
+        )$p.value
+      ),
+
+      error = function(e) {
+        NA_real_
+      }
+    )
+
+  } else {
+
+    # For unpaired tests, remove missing values independently
+    a <- a[
+      is.finite(a)
+    ]
+
+    b <- b[
+      is.finite(b)
+    ]
+
+    if (
+      length(a) < 1 ||
+      length(b) < 1
+    ) {
+      return(NA_real_)
+    }
+
+    p_value <- tryCatch(
+
+      suppressWarnings(
+        stats::wilcox.test(
+          x = a,
+          y = b,
+          paired = FALSE,
+
+          # Explicit approximation gives more consistent
+          # behavior across different R versions
+          exact = FALSE,
+          correct = TRUE
+        )$p.value
+      ),
+
+      error = function(e) {
+        NA_real_
+      }
+    )
+  }
+
+  if (
+    length(p_value) != 1 ||
+    !is.finite(p_value)
+  ) {
+    return(NA_real_)
+  }
+
+  as.numeric(p_value)
 }
 
 parse_feature_table_to_matrix <- function(raw_df,
                                          row_id_col,
                                          mz_col,
                                          rt_col,
-                                         sample_keywords) {
+                                         sample_keywords = NULL,
+                                         sample_cols = NULL) {
   raw_df <- clean_mzmine_export(raw_df)
   cols <- names(raw_df)
 
@@ -351,12 +668,39 @@ parse_feature_table_to_matrix <- function(raw_df,
     need(rt_col %in% cols,     "rt column not found.")
   )
 
-  sidx <- multi_sample_idx(cols, sample_keywords)
-  validate(need(length(sidx) > 0,
-                sprintf("No sample columns matched keywords: %s",
-                        paste(sample_keywords, collapse = ", "))))
+  if (!is.null(sample_cols) && length(sample_cols) > 0) {
+
+  sample_cols <- intersect(
+    sample_cols,
+    cols
+  )
+
+  validate(
+    need(
+      length(sample_cols) > 0,
+      "No selected sample columns were found in the peak table."
+    )
+  )
+
+} else {
+
+  sidx <- multi_sample_idx(
+    cols,
+    sample_keywords
+  )
+
+  validate(
+    need(
+      length(sidx) > 0,
+      sprintf(
+        "No sample columns matched keywords: %s",
+        paste(sample_keywords, collapse = ", ")
+      )
+    )
+  )
 
   sample_cols <- cols[sidx]
+}
 
   # samples x features
   # Using data.table::transpose exactly as original
@@ -588,7 +932,7 @@ compute_stats_long <- function(df_used,
     )
 
     dd$`Adj.p-value.log` <- -log10(pmax(dd$`Adj.p-value`, .Machine$double.xmin))
-    dd$Significant <- (dd$`Adj.p-value` <= 0.05) & (abs(dd$FC) >= 1)
+    dd$Significant_default <- (dd$`Adj.p-value` <= 0.05) & (abs(dd$FC) >= 1)
 
     out_list[[i]] <- dd
   }
@@ -608,18 +952,50 @@ volcano_to_wide_if_needed <- function(volc) {
     return(volc)
   }
 
-  static_cols <- intersect(
-    c(
-      "Feature",
-      "id",
-      "mz",
-      "RT",
-      "NPC#class",
-      "ClassyFire#class",
-      "GNPS_annotation"
-    ),
-    names(volc)
+  # Columns that vary between statistical comparisons
+comparison_specific_cols <- c(
+  "Groups",
+  "Group_num",
+  "Group_den",
+  "Adj.p-value",
+  "Mean",
+  "mean_num",
+  "mean_den",
+  "FC",
+  "TestScale",
+  "Adj.p-value.log",
+  "Significant_default"
+)
+
+# Everything else is feature-level metadata and should
+# remain in the wide report, including Peak_* and SIRIUS_*.
+static_cols <- setdiff(
+  names(volc),
+  comparison_specific_cols
+)
+
+# Keep the most important columns first
+preferred_static_order <- c(
+  "Feature",
+  "id",
+  "mz",
+  "RT",
+  "NPC#class",
+  "ClassyFire#class",
+  "GNPS_annotation"
+)
+
+static_cols <- c(
+  intersect(
+    preferred_static_order,
+    static_cols
+  ),
+
+  setdiff(
+    static_cols,
+    preferred_static_order
   )
+)
 
   n_comp <- dplyr::n_distinct(volc$Groups)
 
@@ -665,7 +1041,7 @@ volcano_to_wide_if_needed <- function(volc) {
     "FC",
     "Adj.p-value",
     "Mean",
-    "Significant"
+    "Significant_default"
   ),
   names(volc)
 )
@@ -834,28 +1210,22 @@ make_autoplotter_name_map <- function(fmap, volcano = NULL) {
       ) %>%
       dplyr::distinct(Feature, .keep_all = TRUE) %>%
       dplyr::mutate(
-        `NPC#class` = dplyr::if_else(
-          is.na(`NPC#class`) | `NPC#class` == "Not provided",
-          "",
-          as.character(`NPC#class`)
-        ),
-        `ClassyFire#class` = dplyr::if_else(
-          is.na(`ClassyFire#class`) | `ClassyFire#class` == "Not provided",
-          "",
-          as.character(`ClassyFire#class`)
-        )
+        `NPC#class` = clean_missing_text(
+        `NPC#class`
+      ),
+
+      `ClassyFire#class` = clean_missing_text(
+        `ClassyFire#class`
+      )
       )
 
     out <- out %>%
       dplyr::left_join(ann, by = c("Name" = "Feature"))
 
-  } else {
-    out$`NPC#class` <- ""
-    out$`ClassyFire#class` <- ""
-  }
-
-  out$`NPC#class`[is.na(out$`NPC#class`)] <- ""
-  out$`ClassyFire#class`[is.na(out$`ClassyFire#class`)] <- ""
+} else {
+  out$`NPC#class` <- NA_character_
+  out$`ClassyFire#class` <- NA_character_
+}
 
   out
 }
