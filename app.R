@@ -221,9 +221,26 @@ labels_from_sample_names_or_raw <- function(sample_names,
   idx <- as.integer(token_index %||% 2)
 
   parts <- strsplit(sn, sep, fixed = TRUE)
-  ok <- vapply(parts, function(z) length(z) >= idx, logical(1))
+ok <- vapply(parts, function(z) length(z) >= idx, logical(1))
 
-  labs <- vapply(seq_along(parts), function(i) {
+if (!all(ok)) {
+  msg <- sprintf(
+    "Warning: Token %d missing in some sample names. Falling back to the full sample name.",
+    idx
+  )
+
+  warning(msg)
+
+  if (!is.null(shiny::getDefaultReactiveDomain())) {
+    shiny::showNotification(
+      msg,
+      type = "warning",
+      duration = 8
+    )
+  }
+}
+
+labs <- vapply(seq_along(parts), function(i) {
     if (ok[i] && nzchar(parts[[i]][[idx]])) {
       parts[[i]][[idx]]
     } else {
@@ -677,7 +694,8 @@ parse_feature_table_to_matrix <- function(raw_df,
                                          row_id_col,
                                          mz_col,
                                          rt_col,
-                                         sample_keywords) {
+                                         sample_keywords = NULL,
+                                         sample_cols = NULL) {
   raw_df <- clean_mzmine_export(raw_df)
   cols <- names(raw_df)
 
@@ -687,12 +705,39 @@ parse_feature_table_to_matrix <- function(raw_df,
     need(rt_col %in% cols,     "rt column not found.")
   )
 
-  sidx <- multi_sample_idx(cols, sample_keywords)
-  validate(need(length(sidx) > 0,
-                sprintf("No sample columns matched keywords: %s",
-                        paste(sample_keywords, collapse = ", "))))
+  if (!is.null(sample_cols) && length(sample_cols) > 0) {
+
+  sample_cols <- intersect(
+    sample_cols,
+    cols
+  )
+
+  validate(
+    need(
+      length(sample_cols) > 0,
+      "No selected sample columns were found in the peak table."
+    )
+  )
+
+} else {
+
+  sidx <- multi_sample_idx(
+    cols,
+    sample_keywords
+  )
+
+  validate(
+    need(
+      length(sidx) > 0,
+      sprintf(
+        "No sample columns matched keywords: %s",
+        paste(sample_keywords, collapse = ", ")
+      )
+    )
+  )
 
   sample_cols <- cols[sidx]
+}
 
   # samples x features
   # Using data.table::transpose exactly as original
@@ -1481,15 +1526,41 @@ tags$head(tags$style(HTML("
           helpText(HTML("<i class='fa fa-info-circle'></i> Need data to test? Download example datasets from our <a href='https://github.com/plyush1993/Metabocano' target='_blank'>GitHub</a>.")),
           uiOutput("col_pickers"),
 
-          selectizeInput(
-            "sample_keywords",
-            "Sample column keywords (pick/add multiple):",
-            choices  = c(".mzML", ".mzXML", ".raw", ".d", ".wiff", ".lcd", "Peak area", "Area", "_Area"),
-            selected = c(".mzML", ".mzXML"),
-            multiple = TRUE,
-            options  = list(create = TRUE, createOnBlur = TRUE,
-                            placeholder = "Type to add keyword and press Enter")
-          ),
+          radioButtons(
+  "sample_mode",
+  "How to define sample columns?",
+  choices = c(
+    "Auto-detect numeric sample columns" = "auto",
+    "By keyword match" = "kws",
+    "Pick columns manually" = "manual"
+  ),
+  selected = "kws"
+),
+
+conditionalPanel(
+  condition = "input.sample_mode == 'kws'",
+
+  selectizeInput(
+    "sample_keywords",
+    "Sample column keywords (pick/add multiple):",
+    choices = c(
+      ".mzML", ".mzXML", ".raw", ".d", ".wiff", ".lcd",
+      "Peak area", "Area", "_Area"
+    ),
+    selected = c(".mzML", ".mzXML"),
+    multiple = TRUE,
+    options = list(
+      create = TRUE,
+      createOnBlur = TRUE,
+      placeholder = "Type to add keyword and press Enter"
+    )
+  )
+),
+
+conditionalPanel(
+  condition = "input.sample_mode == 'manual'",
+  uiOutput("manual_sample_cols_ui")
+),
 
           tags$hr(),
           h3(class = "highlight", "Labels"),
@@ -1677,10 +1748,16 @@ conditionalPanel(
       ),
 
       conditionalPanel(
-        condition = "input.use_sirius",
-        fileInput("file_sirius", "Upload SIRIUS .csv output", accept = ".csv"),
-        uiOutput("sirius_pickers")
-      ),
+  condition = "input.use_sirius",
+
+  fileInput(
+    "file_sirius",
+    "Upload SIRIUS output (.csv/.tsv/.txt)",
+    accept = c(".csv", ".tsv", ".txt")
+  ),
+
+  uiOutput("sirius_pickers")
+),
 
 div(
   style = "display: flex; align-items: center; margin-bottom: 15px;",
@@ -2016,6 +2093,53 @@ server <- function(input, output, session) {
     )
   })
 
+  output$manual_sample_cols_ui <- renderUI({
+
+  req(raw_df())
+
+  selectizeInput(
+    "sample_cols_manual",
+    "Pick sample columns:",
+    choices = names(raw_df()),
+    selected = NULL,
+    multiple = TRUE,
+    options = list(
+      placeholder = "Select first and last sample columns"
+    )
+  )
+})
+  
+  observeEvent(input$sample_cols_manual, {
+
+  req(raw_df())
+
+  sel <- input$sample_cols_manual
+
+  if (is.null(sel) || length(sel) < 2)
+    return()
+
+  cols <- names(raw_df())
+
+  pos <- match(sel, cols)
+  pos <- pos[!is.na(pos)]
+
+  if (length(pos) < 2)
+    return()
+
+  # Select everything between leftmost and rightmost selection
+  range_cols <- cols[min(pos):max(pos)]
+
+  if (!setequal(sel, range_cols)) {
+
+    updateSelectizeInput(
+      session,
+      "sample_cols_manual",
+      selected = range_cols
+    )
+  }
+
+}, ignoreInit = TRUE)
+  
   output$raw_header <- renderUI({
     req(raw_df())
     h3(sprintf("Raw dataset: %d rows × %d columns", nrow(raw_df()), ncol(raw_df())))
@@ -2026,6 +2150,147 @@ server <- function(input, output, session) {
     datatable(head(raw_df(), 20), options = list(scrollX = TRUE, pageLength = 8))
   })
 
+  sample_cols_selected <- reactive({
+
+  req(raw_df(), input$row_id_col, input$mz_col, input$rt_col)
+
+  df <- as.data.frame(
+    raw_df(),
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+
+  cols <- names(df)
+
+  mode <- input$sample_mode %||% "kws"
+
+  # Columns that must never be treated as samples in Auto/Keyword mode
+  meta <- unique(c(
+    input$row_id_col,
+    input$mz_col,
+    input$rt_col,
+    "<Auto-generate>"
+  ))
+
+  meta <- meta[
+    !is.na(meta) &
+      nzchar(meta)
+  ]
+
+  # MANUAL
+  if (mode == "manual") {
+
+    validate(
+      need(
+        !is.null(input$sample_cols_manual) &&
+          length(input$sample_cols_manual) > 0,
+        "Pick sample columns."
+      )
+    )
+
+    sc <- intersect(
+      input$sample_cols_manual,
+      cols
+    )
+
+    validate(
+      need(
+        length(sc) > 0,
+        "Manual sample columns not found in table."
+      )
+    )
+
+    return(sc)
+  }
+
+  # KEYWORDS
+  if (mode == "kws") {
+
+    kws <- input$sample_keywords %||%
+      character(0)
+
+    idx <- multi_sample_idx(
+      cols,
+      kws
+    )
+
+    validate(
+      need(
+        length(idx) > 0,
+        paste0(
+          "No sample columns matched the keywords: ",
+          paste(kws, collapse = ", ")
+        )
+      )
+    )
+
+    sc <- cols[idx]
+
+    # Do not allow m/z, RT, ID etc. to become samples
+    sc <- setdiff(
+      sc,
+      meta
+    )
+
+    validate(
+      need(
+        length(sc) > 0,
+        "Keyword hits were only metadata columns. Use Manual or Auto."
+      )
+    )
+
+    return(sc)
+  }
+
+  # AUTO
+  cand <- setdiff(
+    cols,
+    meta
+  )
+
+  # Same idea as MetaboCensoR:
+  # exclude typical 'row ...' helper columns
+  cand <- cand[
+    !grepl(
+      "^row\\b",
+      cand,
+      ignore.case = TRUE
+    )
+  ]
+
+  prop_num <- vapply(
+    df[cand],
+    function(x) {
+
+      x2 <- suppressWarnings(
+        as.numeric(
+          as.character(x)
+        )
+      )
+
+      mean(
+        is.finite(x2),
+        na.rm = TRUE
+      )
+    },
+    numeric(1)
+  )
+
+  # At least 70% numeric-like
+  sc <- cand[
+    prop_num >= 0.7
+  ]
+
+  validate(
+    need(
+      length(sc) > 0,
+      "Auto-detect found no numeric sample columns. Switch to Manual or Keywords."
+    )
+  )
+
+  sc
+})
+  
   output$peak_extra_cols_ui <- renderUI({
 
   req(raw_df())
@@ -2035,17 +2300,7 @@ server <- function(input, output, session) {
 
   # Identify sample-intensity columns so they are not offered
   # as additional feature metadata columns.
-  sample_keywords <- input$sample_keywords %||%
-    character(0)
-
-  sample_idx <- multi_sample_idx(
-    cols,
-    sample_keywords
-  )
-
-  sample_cols <- cols[
-    sample_idx
-  ]
+  sample_cols <- sample_cols_selected()
 
   # Exclude columns already used as essential feature metadata
   excluded_cols <- unique(
@@ -2103,35 +2358,35 @@ server <- function(input, output, session) {
 })
   
   # ---- Build matrix + fmap ----
-  built <- reactive({
-    req(raw_df(), input$row_id_col, input$mz_col, input$rt_col)
-    
-    df <- raw_df()
-    rid_col <- input$row_id_col
-    
-    if (rid_col == "<Auto-generate>") {
-      df$FeatureID_Auto <- as.numeric(seq_len(nrow(df)))
-      rid_col <- "FeatureID_Auto"
-    }
-    
-    kws <- input$sample_keywords
-    if (is.null(kws) || length(kws) == 0) kws <- c(".") 
+ built <- reactive({
 
-    parse_feature_table_to_matrix(
-      df, 
-      row_id_col = rid_col,
-      mz_col     = input$mz_col,
-      rt_col     = input$rt_col,
-      sample_keywords = kws
-    )
-  })
+  req(raw_df(), input$row_id_col, input$mz_col, input$rt_col)
 
-  sample_names <- reactive({
-    req(built())
-    rownames(built()$mat)
-  })
+  df <- raw_df()
+  rid_col <- input$row_id_col
 
-  manual_labels <- reactiveVal(NULL)
+  if (rid_col == "<Auto-generate>") {
+    df$FeatureID_Auto <- as.numeric(seq_len(nrow(df)))
+    rid_col <- "FeatureID_Auto"
+  }
+
+  sc <- sample_cols_selected()
+
+  parse_feature_table_to_matrix(
+    df,
+    row_id_col = rid_col,
+    mz_col = input$mz_col,
+    rt_col = input$rt_col,
+    sample_cols = sc
+  )
+})
+
+sample_names <- reactive({
+  req(built())
+  rownames(built()$mat)
+})
+
+manual_labels <- reactiveVal(NULL)
 
 auto_label_table <- reactive({
   req(sample_names())
@@ -2309,31 +2564,15 @@ metadata_labels <- reactive({
 
     trimws(as.character(tbl$Label))
 
-  } else {
+} else {
 
-    sn <- sample_names()
-    sn2 <- sn
-    sep <- input$token_sep %||% "_"
-    idx <- as.integer(input$token_index %||% 2)
-
-    parts <- strsplit(sn2, sep, fixed = TRUE)
-    ok <- vapply(parts, function(z) length(z) >= idx, logical(1))
-
-    validate(
-      need(
-        all(ok),
-        sprintf("Token %d missing in some sample names. Adjust separator/index.", idx)
-      )
-    )
-
-    labs <- vapply(parts, function(z) z[[idx]], character(1))
-
-    validate(
-      need(all(nzchar(labs)), "Parsed empty labels — adjust separator/index.")
-    )
-
-    labs
-  }
+  labels_from_sample_names_or_raw(
+    sample_names(),
+    token_sep = input$token_sep %||% "_",
+    token_index = input$token_index %||% 2,
+    clean_names = FALSE
+  )
+}
 })
 
   output$labels_header <- renderUI({
@@ -2532,12 +2771,40 @@ selected_manual_comparisons <- reactive({
 
   # ---- SIRIUS pickers ----
   sirius_df <- reactive({
-    req(input$use_sirius)
-    req(input$file_sirius)
-    ext <- tools::file_ext(input$file_sirius$name)
-    validate(need(tolower(ext) == "csv", "SIRIUS file must be .csv"))
-    vroom::vroom(input$file_sirius$datapath, delim = ",") %>% as.data.frame(check.names = FALSE)
-  })
+
+  req(input$use_sirius)
+  req(input$file_sirius)
+
+  ext <- tolower(
+    tools::file_ext(
+      input$file_sirius$name
+    )
+  )
+
+  validate(
+    need(
+      ext %in% c("csv", "tsv", "txt"),
+      "SIRIUS file must be .csv, .tsv, or .txt."
+    )
+  )
+
+  delim <- if (identical(ext, "csv")) {
+    ","
+  } else {
+    "\t"
+  }
+
+  as.data.frame(
+    vroom::vroom(
+      input$file_sirius$datapath,
+      delim = delim,
+      col_names = TRUE,
+      show_col_types = FALSE
+    ),
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+})
 
   output$sirius_pickers <- renderUI({
 
@@ -3627,73 +3894,32 @@ output$network_volcano_options <- renderUI({
         class = "small-note",
         style = "margin-top: 8px;",
         paste0(
-          "Run preprocessing to add volcano FC, FDR, mean ",
-          "intensity, and GNPS annotation to node hover."
+          "Run preprocessing to add statistical results from all ",
+          "processed comparisons to network-node hover and click details."
         )
       )
     )
-  }
-
-  volc <- as.data.frame(
-    rv$volcano,
-    check.names = FALSE,
-    stringsAsFactors = FALSE
-  )
-
-  comparison_control <- NULL
-
-  if ("Groups" %in% names(volc)) {
-
-    comparisons <- unique(
-      as.character(
-        volc$Groups
-      )
-    )
-
-    comparisons <- comparisons[
-      !is.na(comparisons) &
-        nzchar(comparisons)
-    ]
-
-    if (length(comparisons) > 1) {
-
-      old_comparison <- isolate(
-        input$network_volcano_group
-      )
-
-      selected_comparison <- if (
-        !is.null(old_comparison) &&
-        old_comparison %in% comparisons
-      ) {
-        old_comparison
-      } else {
-        comparisons[1]
-      }
-
-      comparison_control <- conditionalPanel(
-        condition = "input.network_use_volcano == true",
-
-        selectInput(
-          "network_volcano_group",
-          "Volcano comparison:",
-          choices = comparisons,
-          selected = selected_comparison
-        )
-      )
-    }
   }
 
   tagList(
 
     materialSwitch(
       inputId = "network_use_volcano",
-      label = "Add volcano results to node hover",
+      label = "Add all processed statistical comparisons to network nodes",
       value = TRUE,
       status = "success",
       width = "auto"
     ),
 
-    comparison_control
+    div(
+      class = "small-note",
+      style = "margin-top: 4px;",
+      paste0(
+        "For each network node, FC, adjusted p-value, -log10(FDR), ",
+        "overall mean, group means, test scale, and significance ",
+        "are shown for every processed comparison."
+      )
+    )
   )
 })
 
@@ -3849,201 +4075,455 @@ selected_component_network_data <- reactive({
 
   volcano_added <- FALSE
 
-  if (
-    isTRUE(input$network_use_volcano) &&
-    !is.null(rv$volcano) &&
-    is.data.frame(rv$volcano) &&
-    nrow(rv$volcano) &&
-    "id" %in% names(rv$volcano)
+format_network_number <- function(
+    x,
+    digits = 4
+) {
+
+  x <- suppressWarnings(
+    as.numeric(x)
+  )
+
+  out <- rep(
+    "NA",
+    length(x)
+  )
+
+  ok <- is.finite(x)
+
+  out[ok] <- format(
+    signif(
+      x[ok],
+      digits
+    ),
+    scientific = FALSE,
+    trim = TRUE
+  )
+
+  out
+}
+
+
+# Empty structure in case volcano statistics are unavailable
+volcano_stats_long <- tibble::tibble(
+
+  ClusterID = character(),
+  Comparison = character(),
+
+  Group_num = character(),
+  Group_den = character(),
+
+  FC = numeric(),
+  Adj_p = numeric(),
+  Adj_p_log = numeric(),
+
+  Mean = numeric(),
+  mean_num = numeric(),
+  mean_den = numeric(),
+
+  TestScale = character(),
+  Significant_default = character(),
+
+  GNPS_annotation = character(),
+
+  Comparison_hover = character()
+)
+
+
+if (
+  isTRUE(input$network_use_volcano) &&
+  !is.null(rv$volcano) &&
+  is.data.frame(rv$volcano) &&
+  nrow(rv$volcano) &&
+  "id" %in% names(rv$volcano)
+) {
+
+  volc <- as.data.frame(
+    rv$volcano,
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+
+
+  n_volc <- nrow(volc)
+
+
+  get_chr <- function(column_name) {
+
+    if (!column_name %in% names(volc)) {
+
+      return(
+        rep(
+          NA_character_,
+          n_volc
+        )
+      )
+    }
+
+    as.character(
+      volc[[column_name]]
+    )
+  }
+
+
+  get_num <- function(column_name) {
+
+    if (!column_name %in% names(volc)) {
+
+      return(
+        rep(
+          NA_real_,
+          n_volc
+        )
+      )
+    }
+
+    suppressWarnings(
+      as.numeric(
+        volc[[column_name]]
+      )
+    )
+  }
+
+
+  comparison_values <- get_chr(
+    "Groups"
+  )
+
+  comparison_values[
+    is.na(comparison_values) |
+      !nzchar(
+        trimws(
+          comparison_values
+        )
+      )
+  ] <- "Comparison"
+
+
+  gnps_values <- if (
+    "GNPS_annotation" %in% names(volc)
   ) {
 
-    volc <- as.data.frame(
-      rv$volcano,
-      check.names = FALSE,
-      stringsAsFactors = FALSE
+    clean_missing_text(
+      volc$GNPS_annotation
     )
 
-    if ("Groups" %in% names(volc)) {
+  } else {
 
-      available_groups <- unique(
-        as.character(
-          volc$Groups
-        )
+    rep(
+      NA_character_,
+      n_volc
+    )
+  }
+
+
+  volcano_stats_long <- tibble::tibble(
+
+    ClusterID = trimws(
+      as.character(
+        volc$id
       )
+    ),
 
-      selected_group <- input$network_volcano_group
+    Comparison = comparison_values,
 
-      if (
-        is.null(selected_group) ||
-        !selected_group %in% available_groups
-      ) {
-        selected_group <- available_groups[1]
-      }
+    Group_num = get_chr(
+      "Group_num"
+    ),
 
-      volc <- volc[
-        as.character(volc$Groups) ==
-          selected_group,
-        ,
-        drop = FALSE
-      ]
-    }
+    Group_den = get_chr(
+      "Group_den"
+    ),
 
-    volcano_node_data <- tibble::tibble(
-      ClusterID = trimws(
-        as.character(
-          volc$id
-        )
+    FC = get_num(
+      "FC"
+    ),
+
+    Adj_p = get_num(
+      "Adj.p-value"
+    ),
+
+    Adj_p_log = get_num(
+      "Adj.p-value.log"
+    ),
+
+    Mean = get_num(
+      "Mean"
+    ),
+
+    mean_num = get_num(
+      "mean_num"
+    ),
+
+    mean_den = get_num(
+      "mean_den"
+    ),
+
+    TestScale = get_chr(
+      "TestScale"
+    ),
+
+    Significant_default = get_chr(
+      "Significant_default"
+    ),
+
+    GNPS_annotation = gnps_values
+  ) %>%
+
+    dplyr::filter(
+      !is.na(ClusterID),
+      nzchar(ClusterID)
+    ) %>%
+
+    dplyr::distinct(
+      ClusterID,
+      Comparison,
+      .keep_all = TRUE
+    )
+
+
+  if (nrow(volcano_stats_long)) {
+
+    group_num_label <- volcano_stats_long$Group_num
+    group_den_label <- volcano_stats_long$Group_den
+
+
+    group_num_label[
+      is.na(group_num_label) |
+        !nzchar(group_num_label)
+    ] <- "Group 1"
+
+
+    group_den_label[
+      is.na(group_den_label) |
+        !nzchar(group_den_label)
+    ] <- "Group 2"
+
+
+    test_scale_label <- volcano_stats_long$TestScale
+
+    test_scale_label[
+      is.na(test_scale_label) |
+        !nzchar(test_scale_label)
+    ] <- "NA"
+
+
+    significant_label <-
+      volcano_stats_long$Significant_default
+
+    significant_label[
+      is.na(significant_label) |
+        !nzchar(significant_label)
+    ] <- "NA"
+
+
+    volcano_stats_long$Comparison_hover <- paste0(
+
+      "<br><br><b>Comparison: ",
+      htmltools::htmlEscape(
+        volcano_stats_long$Comparison
+      ),
+      "</b>",
+
+      "<br>FC: ",
+      format_network_number(
+        volcano_stats_long$FC
+      ),
+
+      "<br>Adjusted p-value: ",
+      format_network_number(
+        volcano_stats_long$Adj_p
+      ),
+
+      "<br>-log10(FDR): ",
+      format_network_number(
+        volcano_stats_long$Adj_p_log
+      ),
+
+      "<br>Mean intensity: ",
+      format_network_number(
+        volcano_stats_long$Mean
+      ),
+
+      "<br>Mean [",
+      htmltools::htmlEscape(
+        group_num_label
+      ),
+      "]: ",
+      format_network_number(
+        volcano_stats_long$mean_num
+      ),
+
+      "<br>Mean [",
+      htmltools::htmlEscape(
+        group_den_label
+      ),
+      "]: ",
+      format_network_number(
+        volcano_stats_long$mean_den
+      ),
+
+      "<br>Test scale: ",
+      htmltools::htmlEscape(
+        test_scale_label
+      ),
+
+      "<br>Significant: ",
+      htmltools::htmlEscape(
+        significant_label
       )
     )
 
-    if ("FC" %in% names(volc)) {
-      volcano_node_data$Volcano_FC <- suppressWarnings(
-        as.numeric(
-          volc$FC
-        )
-      )
-    }
 
-    if ("Adj.p-value" %in% names(volc)) {
-      volcano_node_data$Volcano_FDR <- suppressWarnings(
-        as.numeric(
-          volc[["Adj.p-value"]]
-        )
-      )
-    }
+    statistics_by_node <- volcano_stats_long %>%
 
-    if ("Mean" %in% names(volc)) {
-      volcano_node_data$Volcano_Mean <- suppressWarnings(
-        as.numeric(
-          volc$Mean
-        )
-      )
-    }
-
-    if ("GNPS_annotation" %in% names(volc)) {
-      volcano_node_data$GNPS_annotation <- clean_missing_text(
-        volc$GNPS_annotation
-      )
-    }
-
-    volcano_node_data <- volcano_node_data %>%
-      dplyr::filter(
-        !is.na(ClusterID),
-        nzchar(ClusterID)
+      dplyr::group_by(
+        ClusterID
       ) %>%
-      dplyr::distinct(
-        ClusterID,
-        .keep_all = TRUE
+
+      dplyr::summarise(
+
+        Statistical_results = paste0(
+          Comparison_hover,
+          collapse = ""
+        ),
+
+        .groups = "drop"
       )
+
+
+    gnps_by_node <- volcano_stats_long %>%
+
+      dplyr::group_by(
+        ClusterID
+      ) %>%
+
+      dplyr::summarise(
+
+        GNPS_annotation = {
+
+          values <- clean_missing_text(
+            GNPS_annotation
+          )
+
+          values <- unique(
+            values[
+              !is.na(values)
+            ]
+          )
+
+          if (length(values)) {
+
+            paste(
+              values,
+              collapse = " | "
+            )
+
+          } else {
+
+            NA_character_
+          }
+        },
+
+        .groups = "drop"
+      )
+
 
     node_data <- node_data %>%
+
       dplyr::left_join(
-        volcano_node_data,
+        statistics_by_node,
+        by = "ClusterID"
+      ) %>%
+
+      dplyr::left_join(
+        gnps_by_node,
         by = "ClusterID"
       )
 
+
     volcano_added <- TRUE
   }
+}
 
-  # Ensure optional columns always exist
-  if (!"Volcano_FC" %in% names(node_data)) {
-    node_data$Volcano_FC <- NA_real_
-  }
 
-  if (!"Volcano_FDR" %in% names(node_data)) {
-    node_data$Volcano_FDR <- NA_real_
-  }
+if (!"Statistical_results" %in% names(node_data)) {
+  node_data$Statistical_results <- NA_character_
+}
 
-  if (!"Volcano_Mean" %in% names(node_data)) {
-    node_data$Volcano_Mean <- NA_real_
-  }
 
-  if (!"GNPS_annotation" %in% names(node_data)) {
-    node_data$GNPS_annotation <- NA_character_
-  }
+if (!"GNPS_annotation" %in% names(node_data)) {
+  node_data$GNPS_annotation <- NA_character_
+}
 
-  format_network_number <- function(x, digits = 4) {
 
-    out <- rep(
-      "NA",
-      length(x)
-    )
+sirius_text <- node_data$SIRIUS_values
 
-    ok <- is.finite(x)
+sirius_text[
+  is.na(sirius_text) |
+    !nzchar(sirius_text)
+] <- "NA"
 
-    out[ok] <- format(
-      signif(
-        x[ok],
-        digits
-      ),
-      scientific = FALSE,
-      trim = TRUE
-    )
 
-    out
-  }
+gnps_text <- node_data$GNPS_annotation
 
-  sirius_text <- node_data$SIRIUS_values
+gnps_text[
+  is.na(gnps_text) |
+    !nzchar(gnps_text)
+] <- "NA"
 
-  sirius_text[
-    is.na(sirius_text) |
-      !nzchar(sirius_text)
-  ] <- "NA"
 
-  gnps_text <- node_data$GNPS_annotation
+node_data$Hover <- paste0(
 
-  gnps_text[
-    is.na(gnps_text) |
-      !nzchar(gnps_text)
-  ] <- "NA"
+  "<b>Cluster ID:</b> ",
+  node_data$ClusterID,
 
-  node_data$Hover <- paste0(
-    "<b>Cluster ID:</b> ",
-    node_data$ClusterID,
+  "<br><b>ComponentIndex:</b> ",
+  selected_component,
 
-    "<br><b>ComponentIndex:</b> ",
-    selected_component,
+  "<br><b>Node degree:</b> ",
+  node_data$Degree,
 
-    "<br><b>Node degree:</b> ",
-    node_data$Degree,
+  "<br><b>",
+  input$stats_sirius_col,
+  ":</b> ",
+  sirius_text,
 
-    "<br><b>",
-    input$stats_sirius_col,
-    ":</b> ",
-    sirius_text,
+  "<br><b>Selected class:</b> ",
+  ifelse(
+    node_data$Selected_class,
+    "Yes",
+    "No"
+  )
+)
 
-    "<br><b>Selected class:</b> ",
-    ifelse(
-      node_data$Selected_class,
-      "Yes",
-      "No"
-    )
+
+if (volcano_added) {
+
+  stats_hover <-
+    node_data$Statistical_results
+
+  stats_hover[
+    is.na(stats_hover) |
+      !nzchar(stats_hover)
+  ] <- paste0(
+    "<br><br>",
+    "No processed statistical results matched this node."
   )
 
-  if (volcano_added) {
 
-    node_data$Hover <- paste0(
-      node_data$Hover,
+  node_data$Hover <- paste0(
 
-      "<br><b>FC:</b> ",
-      format_network_number(
-        node_data$Volcano_FC
-      ),
+    node_data$Hover,
 
-      "<br><b>Adjusted p-value:</b> ",
-      format_network_number(
-        node_data$Volcano_FDR
-      ),
+    "<br><b>GNPS annotation:</b> ",
+    gnps_text,
 
-      "<br><b>Mean intensity:</b> ",
-      format_network_number(
-        node_data$Volcano_Mean
-      ),
+    "<br><br><b>Processed statistical comparisons</b>",
 
-      "<br><b>GNPS annotation:</b> ",
-      gnps_text
-    )
-  }
+    stats_hover
+  )
+}
 
   label_mode <- input$network_label_mode %||%
     "selected"
@@ -4093,13 +4573,15 @@ selected_component_network_data <- reactive({
     )
 
   list(
-    component = selected_component,
-    graph = graph_object,
-    nodes = node_data,
-    edges = edge_coordinates,
-    node_count = igraph::vcount(graph_object),
-    edge_count = igraph::ecount(graph_object)
-  )
+  component = selected_component,
+  graph = graph_object,
+  nodes = node_data,
+  edges = edge_coordinates,
+  volcano_stats = volcano_stats_long,
+  volcano_added = volcano_added,
+  node_count = igraph::vcount(graph_object),
+  edge_count = igraph::ecount(graph_object)
+)
 })
 
 output$gnps_component_network <- plotly::renderPlotly({
@@ -4276,6 +4758,7 @@ output$gnps_network_node_details <- renderUI({
     source = "gnps_component_network"
   )
 
+
   if (
     is.null(click) ||
     is.null(click$key) ||
@@ -4291,46 +4774,61 @@ output$gnps_network_node_details <- renderUI({
     )
   }
 
+
   network <- selected_component_network_data()
+
 
   clicked_id <- as.character(
     click$key[1]
   )
 
+
   row <- network$nodes %>%
+
     dplyr::filter(
       ClusterID == clicked_id
     ) %>%
+
     dplyr::slice(1)
+
 
   if (!nrow(row)) {
     return(NULL)
   }
 
+
   sirius_value <- row$SIRIUS_values[1]
+
 
   if (
     is.na(sirius_value) ||
     !nzchar(sirius_value)
   ) {
+
     sirius_value <- "NA"
   }
 
+
   gnps_value <- row$GNPS_annotation[1]
+
 
   if (
     is.na(gnps_value) ||
     !nzchar(gnps_value)
   ) {
+
     gnps_value <- "NA"
   }
 
+
   format_one <- function(x) {
 
+    x <- suppressWarnings(
+      as.numeric(x)
+    )
+
     if (
-      is.null(x) ||
       !length(x) ||
-      is.na(x[1]) ||
       !is.finite(x[1])
     ) {
       return("NA")
@@ -4346,7 +4844,202 @@ output$gnps_network_node_details <- renderUI({
     )
   }
 
+
+  stats_rows <- network$volcano_stats %>%
+
+    dplyr::filter(
+      ClusterID == clicked_id
+    )
+
+
+  stats_table_ui <- if (!nrow(stats_rows)) {
+
+    div(
+      class = "small-note",
+      style = "margin-top: 10px;",
+      "No processed statistical comparison matched this network node."
+    )
+
+  } else {
+
+
+    table_rows <- lapply(
+
+      seq_len(
+        nrow(stats_rows)
+      ),
+
+      function(i) {
+
+
+        current <- stats_rows[
+          i,
+          ,
+          drop = FALSE
+        ]
+
+
+        group_num <- current$Group_num[1]
+        group_den <- current$Group_den[1]
+
+
+        if (
+          is.na(group_num) ||
+          !nzchar(group_num)
+        ) {
+          group_num <- "Group 1"
+        }
+
+
+        if (
+          is.na(group_den) ||
+          !nzchar(group_den)
+        ) {
+          group_den <- "Group 2"
+        }
+
+
+        test_scale <- current$TestScale[1]
+
+        if (
+          is.na(test_scale) ||
+          !nzchar(test_scale)
+        ) {
+          test_scale <- "NA"
+        }
+
+
+        significant_value <-
+          current$Significant_default[1]
+
+        if (
+          is.na(significant_value) ||
+          !nzchar(significant_value)
+        ) {
+          significant_value <- "NA"
+        }
+
+
+        tags$tr(
+
+          tags$td(
+            current$Comparison[1]
+          ),
+
+          tags$td(
+            group_num
+          ),
+
+          tags$td(
+            format_one(
+              current$mean_num
+            )
+          ),
+
+          tags$td(
+            group_den
+          ),
+
+          tags$td(
+            format_one(
+              current$mean_den
+            )
+          ),
+
+          tags$td(
+            format_one(
+              current$FC
+            )
+          ),
+
+          tags$td(
+            format_one(
+              current$Adj_p
+            )
+          ),
+
+          tags$td(
+            format_one(
+              current$Adj_p_log
+            )
+          ),
+
+          tags$td(
+            format_one(
+              current$Mean
+            )
+          ),
+
+          tags$td(
+            test_scale
+          ),
+
+          tags$td(
+            significant_value
+          )
+        )
+      }
+    )
+
+
+    tagList(
+
+      h4(
+        style = "margin-top: 14px;",
+        "All processed statistical comparisons"
+      ),
+
+
+      div(
+        style = "overflow-x:auto;",
+
+
+        tags$table(
+
+          class =
+            "table table-striped table-bordered table-condensed",
+
+
+          tags$thead(
+
+            tags$tr(
+
+              tags$th("Comparison"),
+
+              tags$th("Group 1"),
+
+              tags$th("Mean 1"),
+
+              tags$th("Group 2"),
+
+              tags$th("Mean 2"),
+
+              tags$th("FC"),
+
+              tags$th("Adjusted p-value"),
+
+              tags$th("-log10(FDR)"),
+
+              tags$th("Mean intensity"),
+
+              tags$th("Test scale"),
+
+              tags$th("Significant")
+            )
+          ),
+
+
+          tags$tbody(
+            table_rows
+          )
+        )
+      )
+    )
+  }
+
+
   div(
+
     style = "
       background:#ffffffcc;
       padding:10px;
@@ -4355,12 +5048,14 @@ output$gnps_network_node_details <- renderUI({
       margin-top:10px;
     ",
 
+
     h4(
       paste0(
         "Selected network node: ",
         clicked_id
       )
     ),
+
 
     tags$ul(
 
@@ -4387,30 +5082,11 @@ output$gnps_network_node_details <- renderUI({
       tags$li(
         strong("Matches selected class: "),
         ifelse(
-          isTRUE(row$Selected_class[1]),
+          isTRUE(
+            row$Selected_class[1]
+          ),
           "Yes",
           "No"
-        )
-      ),
-
-      tags$li(
-        strong("FC: "),
-        format_one(
-          row$Volcano_FC
-        )
-      ),
-
-      tags$li(
-        strong("Adjusted p-value: "),
-        format_one(
-          row$Volcano_FDR
-        )
-      ),
-
-      tags$li(
-        strong("Mean intensity: "),
-        format_one(
-          row$Volcano_Mean
         )
       ),
 
@@ -4418,7 +5094,10 @@ output$gnps_network_node_details <- renderUI({
         strong("GNPS annotation: "),
         gnps_value
       )
-    )
+    ),
+
+
+    stats_table_ui
   )
 })
 
@@ -6255,5 +6934,5 @@ output$dl_autoplotter_zip <- downloadHandler(
 
 }
 
-shinyApp(ui, server)
 #.....................................................
+shinyApp(ui, server)
