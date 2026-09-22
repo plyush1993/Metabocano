@@ -16,6 +16,7 @@
 #' @import limma
 #' @import RColorBrewer
 #' @import zip
+#' @import igraph
 app_ui <- function() {
 fluidPage(
   useShinyjs(),

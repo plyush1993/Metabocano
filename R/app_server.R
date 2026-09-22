@@ -16,6 +16,7 @@
 #' @import limma
 #' @import RColorBrewer
 #' @import zip
+#' @import igraph
 app_server <- function(input, output, session) {
 
   output$label_upload_warning <- renderUI({
