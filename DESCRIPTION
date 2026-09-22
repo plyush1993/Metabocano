@@ -26,7 +26,8 @@ Imports:
     tidyr,
     viridisLite,
     vroom,
-    limma
+    limma,
+    igraph
 Remotes: 
     bioc::limma
 Depends: 
