@@ -653,85 +653,243 @@ safe_wilcox_p <- function(
   as.numeric(p_value)
 }
 
-parse_feature_table_to_matrix <- function(raw_df,
-                                         row_id_col,
-                                         mz_col,
-                                         rt_col,
-                                         sample_keywords = NULL,
-                                         sample_cols = NULL) {
+parse_feature_table_to_matrix <- function(
+  raw_df,
+  feature_id_source,
+  annotation_id_col,
+  mz_col,
+  rt_col,
+  sample_keywords = NULL,
+  sample_cols = NULL,
+  mz_rt_sep = "@"
+) {
+
   raw_df <- clean_mzmine_export(raw_df)
+
   cols <- names(raw_df)
 
   validate(
-    need(row_id_col %in% cols, "Row ID column not found."),
-    need(mz_col %in% cols,     "m/z column not found."),
-    need(rt_col %in% cols,     "rt column not found.")
-  )
 
-  if (!is.null(sample_cols) && length(sample_cols) > 0) {
-
-  sample_cols <- intersect(
-    sample_cols,
-    cols
-  )
-
-  validate(
     need(
-      length(sample_cols) > 0,
-      "No selected sample columns were found in the peak table."
+        annotation_id_col %in% cols,
+        "Annotation matching ID column not found."
+      ),
+
+    need(
+      mz_col %in% cols,
+      "m/z column not found."
+    ),
+
+    need(
+      rt_col %in% cols,
+      "RT column not found."
+    ),
+
+    need(
+      feature_id_source %in% c("combine_mz_rt", "auto") ||
+        feature_id_source %in% cols,
+      "Selected Feature ID source was not found."
     )
   )
 
-} else {
 
-  sidx <- multi_sample_idx(
-    cols,
-    sample_keywords
-  )
+  # -----------------------------
+  # Sample columns
+  # -----------------------------
+  if (
+    !is.null(sample_cols) &&
+    length(sample_cols) > 0
+  ) {
 
-  validate(
-    need(
-      length(sidx) > 0,
-      sprintf(
-        "No sample columns matched keywords: %s",
-        paste(sample_keywords, collapse = ", ")
+    sample_cols <- intersect(
+      sample_cols,
+      cols
+    )
+
+    validate(
+      need(
+        length(sample_cols) > 0,
+        "No selected sample columns were found in the peak table."
       )
     )
+
+  } else {
+
+    sidx <- multi_sample_idx(
+      cols,
+      sample_keywords
+    )
+
+    validate(
+      need(
+        length(sidx) > 0,
+        sprintf(
+          "No sample columns matched keywords: %s",
+          paste(
+            sample_keywords,
+            collapse = ", "
+          )
+        )
+      )
+    )
+
+    sample_cols <- cols[sidx]
+  }
+
+
+  # -----------------------------
+  # Samples x features matrix
+  # -----------------------------
+  mat <- as.data.frame(
+    data.table::transpose(
+      raw_df[
+        ,
+        sample_cols,
+        drop = FALSE
+      ]
+    ),
+    check.names = FALSE,
+    stringsAsFactors = FALSE
   )
 
-  sample_cols <- cols[sidx]
-}
-
-  # samples x features
-  # Using data.table::transpose exactly as original
-  mat <- as.data.frame(data.table::transpose(raw_df[, sample_cols, drop = FALSE]),
-                       check.names = FALSE, stringsAsFactors = FALSE)
   rownames(mat) <- sample_cols
 
-  # feature definition
-  id <- as.character(raw_df[[row_id_col]])
-  mz <- suppressWarnings(as.numeric(raw_df[[mz_col]]))
-  rt <- suppressWarnings(as.numeric(raw_df[[rt_col]]))
 
-  # safety for NA
-  mz[is.na(mz)] <- 0
-  rt[is.na(rt)] <- 0
-
-  feat_raw <- paste0(round(mz, 4), "@", round(rt, 2))
-  Feature <- make.unique(feat_raw, sep = "_")
-  colnames(mat) <- Feature
-
-  fmap <- tibble(
-    id = id,
-    mz = mz,
-    RT = rt,
-    Feature = Feature
+  # -----------------------------
+  # m/z and RT
+  # -----------------------------
+  mz <- suppressWarnings(
+    as.numeric(
+      raw_df[[mz_col]]
+    )
   )
 
-  mat[] <- lapply(mat, function(z) suppressWarnings(as.numeric(z)))
+  rt <- suppressWarnings(
+    as.numeric(
+      raw_df[[rt_col]]
+    )
+  )
+
+
+  # -----------------------------
+  # Feature ID
+  # -----------------------------
+  if (
+    identical(
+      feature_id_source,
+      "combine_mz_rt"
+    )
+  ) {
+
+    sep <- as.character(
+      mz_rt_sep %||% "@"
+    )
+
+    if (!nzchar(sep)) {
+      sep <- "@"
+    }
+
+    mz_text <- ifelse(
+      is.na(mz),
+      "NA",
+      as.character(
+        round(mz, 4)
+      )
+    )
+
+    rt_text <- ifelse(
+      is.na(rt),
+      "NA",
+      as.character(
+        round(rt, 2)
+      )
+    )
+
+    Feature <- paste0(
+      mz_text,
+      sep,
+      rt_text
+    )
+
+  } else if (
+    identical(
+      feature_id_source,
+      "auto"
+    )
+  ) {
+
+    Feature <- paste0(
+      "feat_",
+      seq_len(
+        nrow(raw_df)
+      )
+    )
+
+  } else {
+
+    Feature <- trimws(
+  as.character(
+    raw_df[[feature_id_source]]
+  )
+)
+
+    # Protect against missing/empty IDs
+    bad_id <- is.na(Feature) |
+      !nzchar(Feature)
+
+    if (any(bad_id)) {
+
+      Feature[bad_id] <- paste0(
+        "feat_",
+        which(bad_id)
+      )
+    }
+  }
+
+
+  # Ensure unique feature names
+  Feature <- make.unique(
+    Feature,
+    sep = "_"
+  )
+
+  colnames(mat) <- Feature
+
+  id <- trimws(
+  as.character(
+    raw_df[[annotation_id_col]]
+  )
+)
+
+  # Keep "id" because the rest of the current app
+  # uses this column for annotation/network matching.
+  # It now corresponds to the selected Feature ID.
+  fmap <- tibble::tibble(
+  id = id,
+  mz = mz,
+  RT = rt,
+  Feature = Feature
+)
+
+
+  # Numeric intensities
+  mat[] <- lapply(
+    mat,
+    function(z) {
+      suppressWarnings(
+        as.numeric(z)
+      )
+    }
+  )
+
   mat[is.na(mat)] <- 0
 
-  list(mat = mat, fmap = fmap, raw = raw_df)
+
+  list(
+    mat = mat,
+    fmap = fmap,
+    raw = raw_df
+  )
 }
 
 impute_lod_random <- function(X,
@@ -982,7 +1140,8 @@ preferred_static_order <- c(
   "RT",
   "NPC#class",
   "ClassyFire#class",
-  "GNPS_annotation"
+  "GNPS_annotation",
+  "Other_annotation"
 )
 
 static_cols <- c(

@@ -19,6 +19,35 @@
 #' @import igraph
 app_server <- function(input, output, session) {
 
+  upload_error <- reactiveVal(NULL)
+
+
+output$upload_tab_error <- renderUI({
+
+  msg <- upload_error()
+
+  if (is.null(msg)) {
+    return(NULL)
+  }
+
+  div(
+    style = "
+      color: #a94442;
+      background-color: #f2dede;
+      border: 1px solid #ebccd1;
+      padding: 12px;
+      margin-bottom: 12px;
+      border-radius: 5px;
+      font-size: 15px;
+      font-weight: bold;
+      text-align: center;
+    ",
+    icon("exclamation-triangle"),
+    " ",
+    msg
+  )
+})
+
   output$label_upload_warning <- renderUI({
   src <- input$label_source %||% "token"
 
@@ -133,61 +162,252 @@ app_server <- function(input, output, session) {
 })
 
   # ---- Load raw data (Robust Switch) ----
-  raw_df <- reactive({
-    req(input$file_data)
-    ext <- tools::file_ext(input$file_data$name)
-    validate(need(tolower(ext) == "csv", "Please upload a .csv file"))
+raw_df <- reactive({
+
+  req(input$file_data)
+
+  tryCatch({
+
+    ext <- tolower(
+      tools::file_ext(input$file_data$name)
+    )
+
+    if (!identical(ext, "csv")) {
+      stop("Please upload a .csv file.")
+    }
 
     tool <- input$software_tool %||% "mzmine"
 
     if (tool == "msdial") {
-      # Use custom robust reader for MS-DIAL
-      df <- read_msdial_robust(input$file_data$datapath)
-      clean_mzmine_export(df) # cleanup empty trailing cols
+
+      df <- read_msdial_robust(
+        input$file_data$datapath
+      )
+
     } else {
-      # Use fast vroom reader for standard CSVs (xcms/mzmine/default)
-      clean_mzmine_export(vroom::vroom(input$file_data$datapath, delim = ","))
+
+      df <- vroom::vroom(
+        input$file_data$datapath,
+        delim = ",",
+        show_col_types = FALSE
+      )
     }
-  }) %>% bindCache(input$file_data$name, input$software_tool)
 
-  # ---- Column Pickers (Smart Defaults) ----
-  output$col_pickers <- renderUI({
-    req(raw_df())
-    cols <- names(raw_df())
-    tool <- input$software_tool %||% "mzmine"
+    df <- clean_mzmine_export(df)
 
-    rid_cand <- switch(tool,
-                       xcms   = c("...1", "X...1", "feature_id", "feature", "id", "row id"),
-                       msdial = c("alignment id", "alignmentid", "spot id"),
-                       default = c("Feature", "row id", "id", "feature_id"),
-                       c("row id", "id", "feature_id")
-    )
-    mz_cand <- switch(tool,
-                      xcms   = c("mzmed", "mz", "m/z", "mzmin", "mzmax"),
-                      msdial = c("average mz", "averagemz", "mz"),
-                      default = c("mz", "m/z", "mass", "average mz"),
-                      c("row m/z", "row mz", "mz")
-    )
-    rt_cand <- switch(tool,
-                      xcms   = c("rtmed", "rt", "rtmin"),
-                      msdial = c("average rt(min)", "average rt", "averagertmin", "rt"),
-                      default = c("rt", "retention time", "time"),
-                      c("row retention time", "row rt", "rt")
+    if (nrow(df) == 0 || ncol(df) == 0) {
+      stop("The uploaded table is empty.")
+    }
+
+    upload_error(NULL)
+
+    df
+
+  }, error = function(e) {
+
+    msg <- paste0(
+      "Parsing error: ",
+      conditionMessage(e)
     )
 
-    def_rid <- guess_col(cols, rid_cand)
-    def_mz  <- guess_col(cols, mz_cand)
-    def_rt  <- guess_col(cols, rt_cand)
+    upload_error(msg)
 
-    choices_rid <- c("<Auto-generate>", cols)
-    sel_rid <- if (is.null(def_rid)) "<Auto-generate>" else def_rid
+    showNotification(
+      msg,
+      type = "error",
+      duration = 6
+    )
 
-    tagList(
-      selectInput("row_id_col", "Row ID column:", choices = choices_rid, selected = sel_rid),
-      selectInput("mz_col",     "m/z column:",   choices = cols, selected = def_mz  %||% cols[1]),
-      selectInput("rt_col",     "rt column:",    choices = cols, selected = def_rt  %||% cols[1])
+    validate(
+      need(FALSE, msg)
     )
   })
+
+}) %>%
+  bindCache(
+    input$file_data$name,
+    input$software_tool
+  )
+
+  # ---- Column Pickers (Smart Defaults) ----
+output$col_pickers <- renderUI({
+
+  req(raw_df())
+
+  cols <- names(raw_df())
+  tool <- input$software_tool %||% "mzmine"
+
+  # Smart defaults for m/z
+  mz_cand <- switch(
+    tool,
+
+    xcms = c(
+      "mzmed",
+      "mz",
+      "m/z",
+      "mzmin",
+      "mzmax"
+    ),
+
+    msdial = c(
+      "average mz",
+      "averagemz",
+      "mz"
+    ),
+
+    default = c(
+      "mz",
+      "m/z",
+      "mass",
+      "average mz"
+    ),
+
+    c(
+      "row m/z",
+      "row mz",
+      "mz"
+    )
+  )
+
+  # Smart defaults for RT
+  rt_cand <- switch(
+    tool,
+
+    xcms = c(
+      "rtmed",
+      "rt",
+      "rtmin"
+    ),
+
+    msdial = c(
+      "average rt(min)",
+      "average rt",
+      "averagertmin",
+      "rt"
+    ),
+
+    default = c(
+      "rt",
+      "retention time",
+      "time"
+    ),
+
+    c(
+      "row retention time",
+      "row rt",
+      "rt"
+    )
+  )
+
+  def_mz <- guess_col(
+    cols,
+    mz_cand
+  )
+
+  def_rt <- guess_col(
+    cols,
+    rt_cand
+  )
+
+  ann_id_cand <- switch(
+  tool,
+
+  xcms = c(
+    "...1",
+    "X...1",
+    "feature_id",
+    "feature",
+    "id"
+  ),
+
+  msdial = c(
+    "alignment id",
+    "alignmentid",
+    "spot id"
+  ),
+
+  default = c(
+    "row id",
+    "feature_id",
+    "feature id",
+    "id"
+  ),
+
+  c(
+    "row id",
+    "id",
+    "feature_id"
+  )
+)
+
+def_ann_id <- guess_col(
+  cols,
+  ann_id_cand
+)
+
+if (is.null(def_ann_id)) {
+  def_ann_id <- cols[1]
+}
+
+  choices_mzrt <- c(
+    "None",
+    cols
+  )
+
+  tagList(
+
+    selectInput(
+      "feature_id_source",
+      "Feature ID:",
+      choices = c(
+        "Combine m/z and RT" = "combine_mz_rt",
+        "Auto-generate (feat_1)" = "auto",
+        stats::setNames(cols, cols)
+      ),
+      selected = "combine_mz_rt"
+    ),
+
+    selectInput(
+  "annotation_id_col",
+  "Annotation matching ID:",
+  choices = cols,
+  selected = def_ann_id
+),
+
+    fluidRow(
+
+      column(
+        6,
+        selectInput(
+          "mz_col",
+          "m/z column:",
+          choices = choices_mzrt,
+          selected = def_mz %||% "None"
+        )
+      ),
+
+      column(
+        6,
+        selectInput(
+          "rt_col",
+          "RT column:",
+          choices = choices_mzrt,
+          selected = def_rt %||% "None"
+        )
+      )
+    ),
+
+    conditionalPanel(
+      condition = "input.feature_id_source == 'combine_mz_rt'",
+
+      textInput(
+        "mz_rt_sep",
+        "m/z–RT separator:",
+        value = "@"
+      )
+    )
+  )
+})
 
   output$manual_sample_cols_ui <- renderUI({
 
@@ -248,7 +468,15 @@ app_server <- function(input, output, session) {
 
   sample_cols_selected <- reactive({
 
-  req(raw_df(), input$row_id_col, input$mz_col, input$rt_col)
+  req(
+  raw_df(),
+  input$feature_id_source,
+  input$mz_col,
+  input$rt_col
+)
+
+  # Remove an old mapping error when inputs are reevaluated
+  upload_error(NULL)
 
   df <- as.data.frame(
     raw_df(),
@@ -260,92 +488,150 @@ app_server <- function(input, output, session) {
 
   mode <- input$sample_mode %||% "kws"
 
-  # Columns that must never be treated as samples in Auto/Keyword mode
-  meta <- unique(c(
-    input$row_id_col,
+  feature_id_col <- if (
+  !is.null(input$feature_id_source) &&
+  !input$feature_id_source %in%
+    c(
+      "combine_mz_rt",
+      "auto"
+    )
+) {
+  input$feature_id_source
+} else {
+  character(0)
+}
+
+meta <- unique(
+  c(
+    feature_id_col,
+    input$annotation_id_col,
     input$mz_col,
     input$rt_col,
-    "<Auto-generate>"
-  ))
+    "None"
+  )
+)
 
   meta <- meta[
     !is.na(meta) &
       nzchar(meta)
   ]
 
-  # MANUAL
-  if (mode == "manual") {
 
-    validate(
-      need(
-        !is.null(input$sample_cols_manual) &&
-          length(input$sample_cols_manual) > 0,
-        "Pick sample columns."
-      )
+  sample_error <- function(msg) {
+
+    upload_error(msg)
+
+    showNotification(
+      msg,
+      type = "error",
+      duration = 8
     )
 
+    validate(
+      need(FALSE, msg)
+    )
+  }
+
+
+  # ---------------------
+  # MANUAL
+  # ---------------------
+  if (mode == "manual") {
+
+    selected <- input$sample_cols_manual %||%
+      character(0)
+
+    if (!length(selected)) {
+
+      sample_error(
+        "Pick at least one sample column."
+      )
+    }
+
     sc <- intersect(
-      input$sample_cols_manual,
+      selected,
       cols
     )
 
-    validate(
-      need(
-        length(sc) > 0,
-        "Manual sample columns not found in table."
-      )
+    sc <- setdiff(
+      sc,
+      meta
     )
+
+    if (!length(sc)) {
+
+      sample_error(
+        "Selected sample columns were not found or contain only Feature ID, m/z, or RT columns."
+      )
+    }
 
     return(sc)
   }
 
+
+  # ---------------------
   # KEYWORDS
+  # ---------------------
   if (mode == "kws") {
 
     kws <- input$sample_keywords %||%
       character(0)
+
+    kws <- as.character(kws)
+
+    kws <- kws[
+      !is.na(kws) &
+        nzchar(kws)
+    ]
+
+    if (!length(kws)) {
+
+      sample_error(
+        "Add at least one sample-column keyword."
+      )
+    }
 
     idx <- multi_sample_idx(
       cols,
       kws
     )
 
-    validate(
-      need(
-        length(idx) > 0,
+    if (!length(idx)) {
+
+      sample_error(
         paste0(
           "No sample columns matched the keywords: ",
           paste(kws, collapse = ", ")
         )
       )
-    )
+    }
 
     sc <- cols[idx]
 
-    # Do not allow m/z, RT, ID etc. to become samples
     sc <- setdiff(
       sc,
       meta
     )
 
-    validate(
-      need(
-        length(sc) > 0,
-        "Keyword hits were only metadata columns. Use Manual or Auto."
+    if (!length(sc)) {
+
+      sample_error(
+        "Keyword matches contain only Feature ID, m/z, or RT columns. Use Manual or Auto."
       )
-    )
+    }
 
     return(sc)
   }
 
+
+  # ---------------------
   # AUTO
+  # ---------------------
   cand <- setdiff(
     cols,
     meta
   )
 
-  # Same idea as MetaboCensoR:
-  # exclude typical 'row ...' helper columns
   cand <- cand[
     !grepl(
       "^row\\b",
@@ -353,6 +639,13 @@ app_server <- function(input, output, session) {
       ignore.case = TRUE
     )
   ]
+
+  if (!length(cand)) {
+
+    sample_error(
+      "No candidate sample columns were found."
+    )
+  }
 
   prop_num <- vapply(
     df[cand],
@@ -372,17 +665,16 @@ app_server <- function(input, output, session) {
     numeric(1)
   )
 
-  # At least 70% numeric-like
   sc <- cand[
     prop_num >= 0.7
   ]
 
-  validate(
-    need(
-      length(sc) > 0,
+  if (!length(sc)) {
+
+    sample_error(
       "Auto-detect found no numeric sample columns. Switch to Manual or Keywords."
     )
-  )
+  }
 
   sc
 })
@@ -399,15 +691,28 @@ app_server <- function(input, output, session) {
   sample_cols <- sample_cols_selected()
 
   # Exclude columns already used as essential feature metadata
-  excluded_cols <- unique(
+  feature_id_col <- if (
+  !is.null(input$feature_id_source) &&
+  !input$feature_id_source %in%
     c(
-      input$row_id_col %||% character(0),
-      input$mz_col %||% character(0),
-      input$rt_col %||% character(0),
-      sample_cols,
-      "<Auto-generate>"
+      "combine_mz_rt",
+      "auto"
     )
+) {
+  input$feature_id_source
+} else {
+  character(0)
+}
+
+excluded_cols <- unique(
+  c(
+    feature_id_col,
+    input$annotation_id_col %||% character(0),
+    input$mz_col %||% character(0),
+    input$rt_col %||% character(0),
+    sample_cols
   )
+)
 
   choices <- setdiff(
     cols,
@@ -454,27 +759,56 @@ app_server <- function(input, output, session) {
 })
 
   # ---- Build matrix + fmap ----
- built <- reactive({
+built <- reactive({
 
-  req(raw_df(), input$row_id_col, input$mz_col, input$rt_col)
+  req(
+  raw_df(),
+  input$feature_id_source,
+  input$annotation_id_col,
+  input$mz_col,
+  input$rt_col
+)
+
+  validate(
+
+    need(
+      !identical(
+        input$mz_col,
+        "None"
+      ) &&
+        input$mz_col %in%
+        names(raw_df()),
+      "Select a valid m/z column."
+    ),
+
+    need(
+      !identical(
+        input$rt_col,
+        "None"
+      ) &&
+        input$rt_col %in%
+        names(raw_df()),
+      "Select a valid RT column."
+    )
+  )
 
   df <- raw_df()
-  rid_col <- input$row_id_col
-
-  if (rid_col == "<Auto-generate>") {
-    df$FeatureID_Auto <- as.numeric(seq_len(nrow(df)))
-    rid_col <- "FeatureID_Auto"
-  }
 
   sc <- sample_cols_selected()
 
   parse_feature_table_to_matrix(
-    df,
-    row_id_col = rid_col,
-    mz_col = input$mz_col,
-    rt_col = input$rt_col,
-    sample_cols = sc
-  )
+  raw_df = df,
+  feature_id_source =
+    input$feature_id_source %||%
+    "combine_mz_rt",
+  annotation_id_col = input$annotation_id_col,
+  mz_col = input$mz_col,
+  rt_col = input$rt_col,
+  sample_cols = sc,
+  mz_rt_sep =
+    input$mz_rt_sep %||%
+    "@"
+)
 })
 
 sample_names <- reactive({
@@ -1203,6 +1537,231 @@ output$gnps_extra_cols_ui <- renderUI({
   )
 })
 
+# ============================================================
+# Other annotation source
+# ============================================================
+
+other_annotation_df <- reactive({
+
+  req(input$use_other_annotation)
+  req(input$file_other_annotation)
+
+  ext <- tolower(
+    tools::file_ext(
+      input$file_other_annotation$name
+    )
+  )
+
+  validate(
+    need(
+      ext %in% c("csv", "tsv", "txt"),
+      "Other annotation file must be .csv, .tsv, or .txt."
+    )
+  )
+
+  delim <- if (identical(ext, "csv")) {
+    ","
+  } else {
+    "\t"
+  }
+
+  as.data.frame(
+    vroom::vroom(
+      input$file_other_annotation$datapath,
+      delim = delim,
+      col_names = TRUE,
+      show_col_types = FALSE
+    ),
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+})
+
+
+output$other_annotation_pickers <- renderUI({
+
+  req(
+    raw_df(),
+    other_annotation_df()
+  )
+
+  peak_cols <- names(raw_df())
+  ann_cols  <- names(other_annotation_df())
+
+  validate(
+    need(
+      length(peak_cols) > 0,
+      "No peak-table columns were detected."
+    ),
+    need(
+      length(ann_cols) > 0,
+      "No columns were detected in the annotation file."
+    )
+  )
+
+
+  # ---------------------------------
+  # Default peak-table matching ID
+  # ---------------------------------
+  default_peak_id <- guess_col(
+    peak_cols,
+    c(
+      "row ID",
+      "row id",
+      "Row ID",
+      "alignment id",
+      "Alignment ID",
+      "feature_id",
+      "feature id",
+      "id"
+    )
+  ) %||% peak_cols[1]
+
+
+  # ---------------------------------
+  # Default annotation-file ID
+  # ---------------------------------
+  default_ann_id <- guess_col(
+    ann_cols,
+    c(
+      "row ID",
+      "row id",
+      "Row ID",
+      "feature_id",
+      "feature id",
+      "mappingFeatureId",
+      "#Scan#",
+      "Scan",
+      "id"
+    )
+  ) %||% ann_cols[1]
+
+
+  # ---------------------------------
+  # Default annotation column
+  # ---------------------------------
+  default_annotation <- guess_col(
+    ann_cols,
+    c(
+      "Annotation",
+      "annotation",
+      "Compound_Name",
+      "Compound_name",
+      "Compound name",
+      "CompoundName",
+      "Name",
+      "Identification",
+      "Compound"
+    )
+  ) %||% ann_cols[
+    min(
+      2,
+      length(ann_cols)
+    )
+  ]
+
+
+  tagList(
+
+    selectInput(
+      "other_peak_id_col",
+      "Peak-table ID column:",
+      choices = peak_cols,
+      selected = default_peak_id
+    ),
+
+    selectInput(
+      "other_annotation_idcol",
+      "Annotation-file ID column:",
+      choices = ann_cols,
+      selected = default_ann_id
+    ),
+
+    selectInput(
+      "other_annotation_col",
+      "Primary annotation column:",
+      choices = ann_cols,
+      selected = default_annotation
+    ),
+
+    materialSwitch(
+      inputId = "use_other_extra_cols",
+      label = "Add additional annotation columns",
+      value = FALSE,
+      status = "success",
+      width = "auto"
+    ),
+
+    conditionalPanel(
+      condition = "input.use_other_extra_cols == true",
+
+      uiOutput(
+        "other_extra_cols_ui"
+      )
+    )
+  )
+})
+
+
+output$other_extra_cols_ui <- renderUI({
+
+  req(
+    other_annotation_df(),
+    input$other_annotation_idcol,
+    input$other_annotation_col
+  )
+
+  cols <- names(
+    other_annotation_df()
+  )
+
+  choices <- setdiff(
+    cols,
+    c(
+      input$other_annotation_idcol,
+      input$other_annotation_col
+    )
+  )
+
+  if (!length(choices)) {
+
+    return(
+      div(
+        class = "small-note",
+        "No additional annotation columns are available."
+      )
+    )
+  }
+
+  current_selection <- isolate(
+    input$other_extra_cols
+  ) %||% character(0)
+
+  current_selection <- intersect(
+    current_selection,
+    choices
+  )
+
+  pickerInput(
+    inputId = "other_extra_cols",
+    label = "Additional annotation columns:",
+    choices = choices,
+    selected = current_selection,
+    multiple = TRUE,
+
+    options = list(
+      `actions-box` = TRUE,
+      `live-search` = TRUE,
+      `none-selected-text` =
+        "Select one or more annotation columns",
+      `selected-text-format` = "count > 2",
+      `count-selected-text` =
+        "{0} annotation column(s) selected",
+      `style` = "btn-success"
+    )
+  )
+})
+
   # ---- SIRIUS & GNPS stats tab ----
 
 guess_col_ci <- function(cols, candidates, default = NULL) {
@@ -1375,33 +1934,30 @@ output$sirius_peak_id_picker <- renderUI({
     )
   )
 
-  selected_row_id <- input$row_id_col %||%
-    ""
+selected_annotation_id <-
+  input$annotation_id_col %||%
+  ""
 
-  default_peak_id <- if (
-    identical(
-      selected_row_id,
-      "<Auto-generate>"
-    )
-  ) {
-    "__auto__"
-  } else if (
-    selected_row_id %in% raw_cols
-  ) {
-    selected_row_id
-  } else {
-    guess_col_ci(
-      raw_cols,
-      c(
-        "row ID",
-        "row id",
-        "id",
-        "feature_id",
-        "feature id"
-      ),
-      default = raw_cols[1]
-    )
-  }
+default_peak_id <- if (
+  selected_annotation_id %in% raw_cols
+) {
+
+  selected_annotation_id
+
+} else {
+
+  guess_col_ci(
+    raw_cols,
+    c(
+      "row ID",
+      "row id",
+      "id",
+      "feature_id",
+      "feature id"
+    ),
+    default = raw_cols[1]
+  )
+}
 
 pickerInput(
   inputId = "sirius_peak_id_col",
@@ -3493,6 +4049,7 @@ if (isTRUE(input$use_peak_extra_cols)) {
       volc$`NPC#class` <- NA_character_
       volc$`ClassyFire#class` <- NA_character_
       volc$GNPS_annotation <- NA_character_
+      volc$Other_annotation <- NA_character_
 
       incProgress(
       0.05,
@@ -4018,6 +4575,331 @@ matched_gnps_ids <- sum(
   }
 }
 
+incProgress(
+  0.05,
+  detail = "Joining other annotation source (optional)"
+)
+
+if (
+  isTRUE(input$use_other_annotation) &&
+  !is.null(input$file_other_annotation)
+) {
+
+  ann <- as.data.frame(
+    other_annotation_df(),
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+
+  raw_peak <- as.data.frame(
+    built()$raw,
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+
+  req(
+    input$other_peak_id_col,
+    input$other_annotation_idcol,
+    input$other_annotation_col
+  )
+
+  validate(
+
+    need(
+      input$other_peak_id_col %in% names(raw_peak),
+      "Selected peak-table ID column for Other Annotation Source was not found."
+    ),
+
+    need(
+      input$other_annotation_idcol %in% names(ann),
+      "Selected annotation-file ID column was not found."
+    ),
+
+    need(
+      input$other_annotation_col %in% names(ann),
+      "Selected primary annotation column was not found."
+    ),
+
+    need(
+      nrow(raw_peak) == nrow(fmap),
+      "Peak table and internal feature map have different row counts."
+    )
+  )
+
+
+  # --------------------------------------------------
+  # Map the selected peak-table ID to internal Feature
+  # --------------------------------------------------
+  peak_other_map <- tibble::tibble(
+
+    Feature = as.character(
+      fmap$Feature
+    ),
+
+    .other_join_id = trimws(
+      as.character(
+        raw_peak[[input$other_peak_id_col]]
+      )
+    )
+  )
+
+  # --------------------------------------------------
+  # Primary annotation
+  # --------------------------------------------------
+  other_primary <- tibble::tibble(
+
+    .other_join_id = trimws(
+      as.character(
+        ann[[input$other_annotation_idcol]]
+      )
+    ),
+
+    Other_annotation = clean_missing_text(
+      ann[[input$other_annotation_col]]
+    )
+  ) %>%
+
+    dplyr::filter(
+      !is.na(.other_join_id),
+      nzchar(.other_join_id)
+    ) %>%
+
+    dplyr::group_by(
+      .other_join_id
+    ) %>%
+
+    dplyr::summarise(
+
+      Other_annotation = {
+
+        values <- unique(
+          Other_annotation[
+            !is.na(Other_annotation)
+          ]
+        )
+
+        if (length(values)) {
+          paste(
+            values,
+            collapse = " | "
+          )
+        } else {
+          NA_character_
+        }
+      },
+
+      .groups = "drop"
+    )
+
+
+  # --------------------------------------------------
+  # Optional additional columns
+  # --------------------------------------------------
+  selected_other_extra <- character(0)
+
+  if (isTRUE(input$use_other_extra_cols)) {
+
+    selected_other_extra <- intersect(
+      input$other_extra_cols %||%
+        character(0),
+      names(ann)
+    )
+
+    selected_other_extra <- setdiff(
+      selected_other_extra,
+      c(
+        input$other_annotation_idcol,
+        input$other_annotation_col
+      )
+    )
+  }
+
+
+  other_colmap <- make_prefixed_colmap(
+    selected_other_extra,
+    prefix = "Other_"
+  )
+
+  other_extra <- NULL
+
+
+  if (length(other_colmap)) {
+
+    other_extra <- data.frame(
+
+      .other_join_id = trimws(
+        as.character(
+          ann[[input$other_annotation_idcol]]
+        )
+      ),
+
+      check.names = FALSE,
+      stringsAsFactors = FALSE
+    )
+
+
+    for (original_name in names(other_colmap)) {
+
+      output_name <-
+        other_colmap[[original_name]]
+
+      value <-
+        ann[[original_name]]
+
+      if (
+        is.character(value) ||
+        is.factor(value)
+      ) {
+
+        value <- clean_missing_text(
+          value
+        )
+      }
+
+      other_extra[[output_name]] <- value
+    }
+
+
+    duplicate_other_ids <- sum(
+      duplicated(
+        other_extra$.other_join_id
+      )
+    )
+
+    if (duplicate_other_ids > 0) {
+
+      showNotification(
+        paste0(
+          "Other annotation source contains ",
+          duplicate_other_ids,
+          " duplicated ID row(s). ",
+          "Primary annotations were combined and the first row ",
+          "was retained for additional columns."
+        ),
+        type = "warning",
+        duration = 8
+      )
+    }
+
+
+    other_extra <- other_extra %>%
+
+      dplyr::filter(
+        !is.na(.other_join_id),
+        nzchar(.other_join_id)
+      ) %>%
+
+      dplyr::distinct(
+        .other_join_id,
+        .keep_all = TRUE
+      )
+  }
+
+
+  other_join <- other_primary
+
+
+  if (!is.null(other_extra)) {
+
+    other_join <- other_join %>%
+      dplyr::left_join(
+        other_extra,
+        by = ".other_join_id"
+      )
+  }
+
+
+  # --------------------------------------------------
+  # Matching statistics
+  # --------------------------------------------------
+  peak_other_ids <- unique(
+    peak_other_map$.other_join_id
+  )
+
+  peak_other_ids <- peak_other_ids[
+    !is.na(peak_other_ids) &
+      nzchar(peak_other_ids)
+  ]
+
+  annotation_other_ids <- unique(
+    other_join$.other_join_id
+  )
+
+  matched_other_ids <- sum(
+    peak_other_ids %in%
+      annotation_other_ids
+  )
+
+
+  # --------------------------------------------------
+  # Join into volcano table
+  # --------------------------------------------------
+  volc <- volc %>%
+
+    dplyr::left_join(
+      peak_other_map,
+      by = "Feature"
+    ) %>%
+
+    dplyr::left_join(
+      other_join,
+      by = ".other_join_id",
+      suffix = c("", ".other")
+    ) %>%
+
+    dplyr::mutate(
+
+      Other_annotation =
+        dplyr::coalesce(
+          .data[["Other_annotation.other"]],
+          .data[["Other_annotation"]]
+        )
+    ) %>%
+
+    dplyr::select(
+      -dplyr::any_of(
+        c(
+          ".other_join_id",
+          "Other_annotation.other"
+        )
+      )
+    )
+
+  if (matched_other_ids == 0) {
+
+    showNotification(
+      paste0(
+        "Other annotation source was uploaded, but no IDs matched. ",
+        "Check the selected peak-table ID column and annotation-file ID column."
+      ),
+      type = "warning",
+      duration = 8
+    )
+
+  } else {
+
+    showNotification(
+      paste0(
+        "Other annotation source joined successfully: ",
+        format(
+          matched_other_ids,
+          big.mark = ",",
+          scientific = FALSE
+        ),
+        " of ",
+        format(
+          length(peak_other_ids),
+          big.mark = ",",
+          scientific = FALSE
+        ),
+        " unique peak-table IDs matched."
+      ),
+      type = "message",
+      duration = 6
+    )
+  }
+}
+
       volc <- volc %>%
         mutate(
           mz = round(mz, 6),
@@ -4502,7 +5384,8 @@ if (isTRUE(input$use_classyfire_filter)) {
       "<br>Mean Intensity: ", format(dd$Mean, big.mark = ",", scientific = FALSE),
       "<br>NPC: ", dd$`NPC#class`,
       "<br>ClassyFire: ", dd$`ClassyFire#class`,
-      "<br>GNPS annotation: ", dd$GNPS_annotation
+      "<br>GNPS annotation: ", dd$GNPS_annotation,
+      "<br>Other annotation: ", dd$Other_annotation
     )
 
     fc_line <- suppressWarnings(as.numeric(input$fc_thr %||% 1))
@@ -4715,6 +5598,21 @@ gnps_detail_map <- make_prefixed_colmap(
   prefix = "GNPS_"
 )
 
+other_detail_map <- make_prefixed_colmap(
+
+  if (
+    isTRUE(input$use_other_annotation) &&
+    isTRUE(input$use_other_extra_cols)
+  ) {
+    input$other_extra_cols %||%
+      character(0)
+  } else {
+    character(0)
+  },
+
+  prefix = "Other_"
+)
+
 detail_labels <- c(
 
   stats::setNames(
@@ -4739,6 +5637,22 @@ detail_labels <- c(
       names(gnps_detail_map)
     ),
     unname(gnps_detail_map)
+  ),
+
+  if (isTRUE(input$use_other_annotation)) {
+    c(
+      "Other annotation" = "Other_annotation"
+    )
+  } else {
+    character(0)
+  },
+
+  stats::setNames(
+    paste0(
+      "Other: ",
+      names(other_detail_map)
+    ),
+    unname(other_detail_map)
   )
 )
 

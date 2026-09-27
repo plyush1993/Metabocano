@@ -149,7 +149,7 @@ tags$head(tags$style(HTML("
 tags$head(
   tags$title("Metabocano"),
   tags$link(rel = "icon", type = "image/png",
-            href = "www/sticker.png")
+            href = "https://raw.githubusercontent.com/plyush1993/Metabocano/main/inst/www/sticker.png")
 ),
 
 tags$head(
@@ -190,7 +190,7 @@ div(
   ",
 
   tags$img(
-    src = 'www/sticker.png',
+    src = 'https://raw.githubusercontent.com/plyush1993/Metabocano/main/inst/www/sticker.png',
     height = '150px',
     style = 'margin-right: 20px;'
   ),
@@ -266,14 +266,32 @@ tags$head(tags$style(HTML("
         sidebarPanel(
           h3(class = "highlight", "Upload"),
           selectInput(
-            "software_tool",
-            "Software tool:",
-            choices = c("mzMine" = "mzmine", "xcms" = "xcms", "MS-DIAL" = "msdial", "Default" = "default"),
-            selected = "mzmine"
-          ),
-          fileInput("file_data", "Upload feature table (.csv)", accept = ".csv"),
-          helpText(HTML("<i class='fa fa-info-circle'></i> Need data to test? Download example datasets from our <a href='https://github.com/plyush1993/Metabocano' target='_blank'>GitHub</a>.")),
-          uiOutput("col_pickers"),
+  "software_tool",
+  "Software tool:",
+  choices = c(
+    "mzMine" = "mzmine",
+    "xcms" = "xcms",
+    "MS-DIAL" = "msdial",
+    "Generic" = "default"
+  ),
+  selected = "mzmine"
+),
+
+fileInput(
+  "file_data",
+  "Upload feature table (.csv)",
+  accept = ".csv"
+),
+
+helpText(
+  HTML(
+    "<i class='fa fa-info-circle'></i> Need data to test? Download example datasets from our <a href='https://github.com/plyush1993/Metabocano' target='_blank'>GitHub</a>."
+  )
+),
+
+uiOutput("upload_tab_error"),
+
+uiOutput("col_pickers"),
 
           radioButtons(
   "sample_mode",
@@ -485,7 +503,7 @@ conditionalPanel(
         id = "btn5",
         title = paste0(
     "<b>Join SIRIUS annotations summary with the processed table.</b><br>",
-    "The selected peak-table <em>Row ID</em> column is matched ",
+    "The selected peak-table <em>Feature ID</em> column is matched ",
     "to the selected SIRIUS mapping ID column.<br>",
     "Default SIRIUS mapping ID: <em>mappingFeatureId</em><br>",
     "Default NPC column: <em>NPS#class</em><br>",
@@ -535,7 +553,7 @@ bsTooltip(
   id = "btn_gnps_annotation",
   title = paste0(
     "<b>Join GNPS library annotations with the processed table.</b><br>",
-    "The selected peak-table <em>Row ID</em> column is matched ",
+    "The selected peak-table <em>Feature ID</em> column is matched ",
     "to the selected GNPS ID column.<br>",
     "Default GNPS ID: <em>#Scan#</em><br>",
     "Default annotation: <em>Compound_Name</em>"
@@ -555,6 +573,55 @@ conditionalPanel(
   ),
 
   uiOutput("gnps_annotation_pickers")
+),
+
+div(
+  style = "display: flex; align-items: center; margin-bottom: 15px;",
+
+  materialSwitch(
+    inputId = "use_other_annotation",
+    label = "Join Other Annotation Source",
+    value = FALSE,
+    status = "success",
+    width = "auto"
+  ),
+
+  actionButton(
+    inputId = "btn_other_annotation",
+    label = "?",
+    class = "btn-xs",
+    style = "
+      font-weight: bold;
+      margin-left: 10px;
+      margin-top: -20px;
+    "
+  )
+),
+
+bsTooltip(
+  id = "btn_other_annotation",
+  title = paste0(
+    "<b>Join annotations from any external table.</b><br>",
+    "Choose a peak-table ID column and the corresponding ",
+    "ID column in the annotation file.<br>",
+    "By default, the peak-table <em>Feature ID</em> column is used when available.<br>",
+    "Choose one primary annotation column and optionally add additional columns."
+  ),
+  placement = "right",
+  trigger = "click",
+  options = list(container = "body")
+),
+
+conditionalPanel(
+  condition = "input.use_other_annotation",
+
+  fileInput(
+    "file_other_annotation",
+    "Upload annotation table (.csv/.tsv/.txt)",
+    accept = c(".csv", ".tsv", ".txt")
+  ),
+
+  uiOutput("other_annotation_pickers")
 ),
 
           tags$hr(),
