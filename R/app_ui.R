@@ -149,7 +149,7 @@ tags$head(tags$style(HTML("
 tags$head(
   tags$title("Metabocano"),
   tags$link(rel = "icon", type = "image/png",
-            href = "https://raw.githubusercontent.com/plyush1993/Metabocano/main/inst/www/sticker.png")
+            href = "www/sticker.png")
 ),
 
 tags$head(
@@ -190,7 +190,7 @@ div(
   ",
 
   tags$img(
-    src = 'https://raw.githubusercontent.com/plyush1993/Metabocano/main/inst/www/sticker.png',
+    src = 'www/sticker.png',
     height = '150px',
     style = 'margin-right: 20px;'
   ),
@@ -675,6 +675,21 @@ conditionalPanel(
           ),
           tags$hr(),
           actionButton("run_proc", "Run preprocessing", class = "btn btn-success"),
+          tags$br(), tags$br(),
+          downloadButton("dl_annotation", "Feature table csv", class = "btn-info"),
+          actionButton("btn_annotation", "?"),
+          bsTooltip("btn_annotation",
+            title = paste0(
+              "<b>Download table with one row per feature with annotation information.</b><br>",
+              "Always includes <em>Feature ID</em>, <em>Annotation matching ID</em>, ",
+              "<em>m/z</em>, and <em>RT</em>.<br>",
+              "After preprocessing, all joined Peak table, SIRIUS, GNPS, ",
+              "and Other Annotation columns are also included."
+            ),
+            placement = "right",
+            trigger = "click",
+            options = list(container = "body")
+          ),
           tags$br(), tags$br(),
           downloadButton("dl_volcano", "Volcano table csv", class = "btn-info"),
           actionButton("btn1", "?"),

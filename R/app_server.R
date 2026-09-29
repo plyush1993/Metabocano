@@ -91,6 +91,7 @@ output$upload_tab_error <- renderUI({
 
   session$onFlushed(function() {
     shinyjs::disable("run_proc")
+    shinyjs::disable("dl_annotation")
     shinyjs::disable("dl_volcano")
     shinyjs::disable("dl_matrix")
     shinyjs::disable("dl_autoplotter_zip")
@@ -112,6 +113,28 @@ output$upload_tab_error <- renderUI({
   } else {
     lapply(ids, shinyjs::disable)
   }
+})
+
+ observe({
+
+  annotation_ready <-
+    !is.null(input$file_data) &&
+
+    !is.null(input$feature_id_source) &&
+
+    !is.null(input$annotation_id_col) &&
+
+    !is.null(input$mz_col) &&
+    !identical(input$mz_col, "None") &&
+
+    !is.null(input$rt_col) &&
+    !identical(input$rt_col, "None")
+
+
+  shinyjs::toggleState(
+    "dl_annotation",
+    condition = annotation_ready
+  )
 })
 
   observeEvent(input$file_data, {
@@ -1599,7 +1622,6 @@ output$other_annotation_pickers <- renderUI({
     )
   )
 
-
   # ---------------------------------
   # Default peak-table matching ID
   # ---------------------------------
@@ -1702,6 +1724,692 @@ output$other_annotation_pickers <- renderUI({
   )
 })
 
+# ============================================================
+# Annotation table for direct download
+# Does NOT require Run preprocessing
+# ============================================================
+
+annotation_export_table <- reactive({
+
+  req(
+    raw_df(),
+    input$feature_id_source,
+    input$annotation_id_col,
+    input$mz_col,
+    input$rt_col
+  )
+
+  raw_peak <- as.data.frame(
+    raw_df(),
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+
+  validate(
+    need(
+      input$annotation_id_col %in% names(raw_peak),
+      "Annotation matching ID column was not found."
+    ),
+    need(
+      !identical(input$mz_col, "None") &&
+        input$mz_col %in% names(raw_peak),
+      "Select a valid m/z column."
+    ),
+    need(
+      !identical(input$rt_col, "None") &&
+        input$rt_col %in% names(raw_peak),
+      "Select a valid RT column."
+    )
+  )
+
+
+  # ==========================================================
+  # Basic feature information
+  # ==========================================================
+
+  mz <- suppressWarnings(
+    as.numeric(
+      raw_peak[[input$mz_col]]
+    )
+  )
+
+  rt <- suppressWarnings(
+    as.numeric(
+      raw_peak[[input$rt_col]]
+    )
+  )
+
+
+  # Same Feature ID logic used by the main app
+  if (
+    identical(
+      input$feature_id_source,
+      "combine_mz_rt"
+    )
+  ) {
+
+    sep <- input$mz_rt_sep %||% "@"
+
+    if (!nzchar(sep)) {
+      sep <- "@"
+    }
+
+    mz_text <- ifelse(
+      is.na(mz),
+      "NA",
+      as.character(round(mz, 4))
+    )
+
+    rt_text <- ifelse(
+      is.na(rt),
+      "NA",
+      as.character(round(rt, 2))
+    )
+
+    Feature <- paste0(
+      mz_text,
+      sep,
+      rt_text
+    )
+
+  } else if (
+    identical(
+      input$feature_id_source,
+      "auto"
+    )
+  ) {
+
+    Feature <- paste0(
+      "feat_",
+      seq_len(nrow(raw_peak))
+    )
+
+  } else {
+
+    validate(
+      need(
+        input$feature_id_source %in% names(raw_peak),
+        "Selected Feature ID column was not found."
+      )
+    )
+
+    Feature <- trimws(
+      as.character(
+        raw_peak[[input$feature_id_source]]
+      )
+    )
+
+    bad_id <- is.na(Feature) |
+      !nzchar(Feature)
+
+    if (any(bad_id)) {
+      Feature[bad_id] <- paste0(
+        "feat_",
+        which(bad_id)
+      )
+    }
+  }
+
+  Feature <- make.unique(
+    Feature,
+    sep = "_"
+  )
+
+
+  annotation_id <- trimws(
+    as.character(
+      raw_peak[[input$annotation_id_col]]
+    )
+  )
+
+
+  out <- data.frame(
+    Feature_ID = Feature,
+    Annotation_Feature_ID = annotation_id,
+    mz = round(mz, 6),
+    RT = round(rt, 4),
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+
+
+  # Internal joining columns
+  out$.Feature_internal <- Feature
+  out$.annotation_id_internal <- annotation_id
+
+
+  # ==========================================================
+  # Selected additional peak-table columns
+  # ==========================================================
+
+  if (isTRUE(input$use_peak_extra_cols)) {
+
+    selected_peak_cols <- intersect(
+      input$peak_extra_cols %||% character(0),
+      names(raw_peak)
+    )
+
+    if (length(selected_peak_cols)) {
+
+      peak_colmap <- make_prefixed_colmap(
+        selected_peak_cols,
+        prefix = "Peak_"
+      )
+
+      for (original_name in names(peak_colmap)) {
+
+        output_name <- peak_colmap[[original_name]]
+
+        out[[output_name]] <-
+          raw_peak[[original_name]]
+      }
+    }
+  }
+
+
+  # ==========================================================
+  # SIRIUS
+  # SIRIUS is matched against Annotation Feature ID
+  # ==========================================================
+
+  if (
+    isTRUE(input$use_sirius) &&
+    !is.null(input$file_sirius) &&
+    !is.null(input$sirius_idcol) &&
+    !is.null(input$sirius_npcol) &&
+    !is.null(input$sirius_cfcol)
+  ) {
+
+    s <- as.data.frame(
+      sirius_df(),
+      check.names = FALSE,
+      stringsAsFactors = FALSE
+    )
+
+    validate(
+      need(
+        input$sirius_idcol %in% names(s),
+        "Selected SIRIUS Feature ID column was not found."
+      ),
+      need(
+        input$sirius_npcol %in% names(s),
+        "Selected SIRIUS NPC column was not found."
+      ),
+      need(
+        input$sirius_cfcol %in% names(s),
+        "Selected SIRIUS ClassyFire column was not found."
+      )
+    )
+
+
+    selected_sirius_extra <- character(0)
+
+    if (isTRUE(input$use_sirius_extra_cols)) {
+
+      selected_sirius_extra <- intersect(
+        input$sirius_extra_cols %||% character(0),
+        names(s)
+      )
+
+      selected_sirius_extra <- setdiff(
+        selected_sirius_extra,
+        c(
+          input$sirius_idcol,
+          input$sirius_npcol,
+          input$sirius_cfcol
+        )
+      )
+    }
+
+
+    sirius_colmap <- make_prefixed_colmap(
+      selected_sirius_extra,
+      prefix = "SIRIUS_"
+    )
+
+
+    ss <- data.frame(
+      .annotation_id_internal = trimws(
+        as.character(
+          s[[input$sirius_idcol]]
+        )
+      ),
+
+      `NPC#class` = clean_missing_text(
+        s[[input$sirius_npcol]]
+      ),
+
+      `ClassyFire#class` = clean_missing_text(
+        s[[input$sirius_cfcol]]
+      ),
+
+      check.names = FALSE,
+      stringsAsFactors = FALSE
+    )
+
+
+    if (length(sirius_colmap)) {
+
+      for (original_name in names(sirius_colmap)) {
+
+        output_name <-
+          sirius_colmap[[original_name]]
+
+        value <- s[[original_name]]
+
+        if (
+          is.character(value) ||
+          is.factor(value)
+        ) {
+          value <- clean_missing_text(value)
+        }
+
+        ss[[output_name]] <- value
+      }
+    }
+
+
+    ss <- ss %>%
+      dplyr::filter(
+        !is.na(.annotation_id_internal),
+        nzchar(.annotation_id_internal)
+      ) %>%
+      dplyr::distinct(
+        .annotation_id_internal,
+        .keep_all = TRUE
+      )
+
+
+    out <- out %>%
+      dplyr::left_join(
+        ss,
+        by = ".annotation_id_internal"
+      )
+  }
+
+
+  # ==========================================================
+  # GNPS
+  # GNPS is also matched against Annotation Feature ID
+  # ==========================================================
+
+  if (
+    isTRUE(input$use_gnps_annotation) &&
+    !is.null(input$file_gnps_annotation) &&
+    !is.null(input$gnps_annotation_idcol) &&
+    !is.null(input$gnps_annotation_col)
+  ) {
+
+    g <- as.data.frame(
+      gnps_annotation_df(),
+      check.names = FALSE,
+      stringsAsFactors = FALSE
+    )
+
+
+    validate(
+      need(
+        input$gnps_annotation_idcol %in% names(g),
+        "Selected GNPS ID column was not found."
+      ),
+      need(
+        input$gnps_annotation_col %in% names(g),
+        "Selected GNPS annotation column was not found."
+      )
+    )
+
+
+    gnps_primary <- data.frame(
+      .annotation_id_internal = trimws(
+        as.character(
+          g[[input$gnps_annotation_idcol]]
+        )
+      ),
+
+      GNPS_annotation = clean_missing_text(
+        g[[input$gnps_annotation_col]]
+      ),
+
+      check.names = FALSE,
+      stringsAsFactors = FALSE
+    ) %>%
+
+      dplyr::filter(
+        !is.na(.annotation_id_internal),
+        nzchar(.annotation_id_internal)
+      ) %>%
+
+      dplyr::group_by(
+        .annotation_id_internal
+      ) %>%
+
+      dplyr::summarise(
+
+        GNPS_annotation = {
+
+          values <- unique(
+            GNPS_annotation[
+              !is.na(GNPS_annotation)
+            ]
+          )
+
+          if (length(values)) {
+            paste(
+              values,
+              collapse = " | "
+            )
+          } else {
+            NA_character_
+          }
+        },
+
+        .groups = "drop"
+      )
+
+
+    # Additional GNPS columns
+    selected_gnps_extra <- character(0)
+
+    if (isTRUE(input$use_gnps_extra_cols)) {
+
+      selected_gnps_extra <- intersect(
+        input$gnps_extra_cols %||% character(0),
+        names(g)
+      )
+
+      selected_gnps_extra <- setdiff(
+        selected_gnps_extra,
+        c(
+          input$gnps_annotation_idcol,
+          input$gnps_annotation_col
+        )
+      )
+    }
+
+
+    gnps_colmap <- make_prefixed_colmap(
+      selected_gnps_extra,
+      prefix = "GNPS_"
+    )
+
+
+    gnps_join <- gnps_primary
+
+
+    if (length(gnps_colmap)) {
+
+      gnps_extra <- data.frame(
+        .annotation_id_internal = trimws(
+          as.character(
+            g[[input$gnps_annotation_idcol]]
+          )
+        ),
+        check.names = FALSE,
+        stringsAsFactors = FALSE
+      )
+
+
+      for (original_name in names(gnps_colmap)) {
+
+        output_name <-
+          gnps_colmap[[original_name]]
+
+        value <- g[[original_name]]
+
+        if (
+          is.character(value) ||
+          is.factor(value)
+        ) {
+          value <- clean_missing_text(value)
+        }
+
+        gnps_extra[[output_name]] <- value
+      }
+
+
+      gnps_extra <- gnps_extra %>%
+        dplyr::filter(
+          !is.na(.annotation_id_internal),
+          nzchar(.annotation_id_internal)
+        ) %>%
+        dplyr::distinct(
+          .annotation_id_internal,
+          .keep_all = TRUE
+        )
+
+
+      gnps_join <- gnps_join %>%
+        dplyr::left_join(
+          gnps_extra,
+          by = ".annotation_id_internal"
+        )
+    }
+
+
+    out <- out %>%
+      dplyr::left_join(
+        gnps_join,
+        by = ".annotation_id_internal"
+      )
+  }
+
+
+  # ==========================================================
+  # OTHER ANNOTATION SOURCE
+  # Can use an arbitrary peak-table ID column
+  # ==========================================================
+
+  if (
+    isTRUE(input$use_other_annotation) &&
+    !is.null(input$file_other_annotation) &&
+    !is.null(input$other_peak_id_col) &&
+    !is.null(input$other_annotation_idcol) &&
+    !is.null(input$other_annotation_col)
+  ) {
+
+    ann <- as.data.frame(
+      other_annotation_df(),
+      check.names = FALSE,
+      stringsAsFactors = FALSE
+    )
+
+
+    validate(
+      need(
+        input$other_peak_id_col %in%
+          names(raw_peak),
+        "Selected peak-table ID column for Other Annotation Source was not found."
+      ),
+      need(
+        input$other_annotation_idcol %in%
+          names(ann),
+        "Selected annotation-file ID column was not found."
+      ),
+      need(
+        input$other_annotation_col %in%
+          names(ann),
+        "Selected primary annotation column was not found."
+      )
+    )
+
+
+    peak_other_map <- data.frame(
+      .Feature_internal = Feature,
+
+      .other_join_id = trimws(
+        as.character(
+          raw_peak[[input$other_peak_id_col]]
+        )
+      ),
+
+      check.names = FALSE,
+      stringsAsFactors = FALSE
+    )
+
+
+    other_primary <- data.frame(
+      .other_join_id = trimws(
+        as.character(
+          ann[[input$other_annotation_idcol]]
+        )
+      ),
+
+      Other_annotation = clean_missing_text(
+        ann[[input$other_annotation_col]]
+      ),
+
+      check.names = FALSE,
+      stringsAsFactors = FALSE
+    ) %>%
+
+      dplyr::filter(
+        !is.na(.other_join_id),
+        nzchar(.other_join_id)
+      ) %>%
+
+      dplyr::group_by(
+        .other_join_id
+      ) %>%
+
+      dplyr::summarise(
+
+        Other_annotation = {
+
+          values <- unique(
+            Other_annotation[
+              !is.na(Other_annotation)
+            ]
+          )
+
+          if (length(values)) {
+            paste(
+              values,
+              collapse = " | "
+            )
+          } else {
+            NA_character_
+          }
+        },
+
+        .groups = "drop"
+      )
+
+
+    selected_other_extra <- character(0)
+
+    if (isTRUE(input$use_other_extra_cols)) {
+
+      selected_other_extra <- intersect(
+        input$other_extra_cols %||%
+          character(0),
+        names(ann)
+      )
+
+      selected_other_extra <- setdiff(
+        selected_other_extra,
+        c(
+          input$other_annotation_idcol,
+          input$other_annotation_col
+        )
+      )
+    }
+
+
+    other_colmap <- make_prefixed_colmap(
+      selected_other_extra,
+      prefix = "Other_"
+    )
+
+
+    other_join <- other_primary
+
+
+    if (length(other_colmap)) {
+
+      other_extra <- data.frame(
+
+        .other_join_id = trimws(
+          as.character(
+            ann[[input$other_annotation_idcol]]
+          )
+        ),
+
+        check.names = FALSE,
+        stringsAsFactors = FALSE
+      )
+
+
+      for (original_name in names(other_colmap)) {
+
+        output_name <-
+          other_colmap[[original_name]]
+
+        value <- ann[[original_name]]
+
+        if (
+          is.character(value) ||
+          is.factor(value)
+        ) {
+          value <- clean_missing_text(value)
+        }
+
+        other_extra[[output_name]] <- value
+      }
+
+
+      other_extra <- other_extra %>%
+        dplyr::filter(
+          !is.na(.other_join_id),
+          nzchar(.other_join_id)
+        ) %>%
+        dplyr::distinct(
+          .other_join_id,
+          .keep_all = TRUE
+        )
+
+
+      other_join <- other_join %>%
+        dplyr::left_join(
+          other_extra,
+          by = ".other_join_id"
+        )
+    }
+
+
+    out <- out %>%
+
+      dplyr::left_join(
+        peak_other_map,
+        by = ".Feature_internal"
+      ) %>%
+
+      dplyr::left_join(
+        other_join,
+        by = ".other_join_id"
+      ) %>%
+
+      dplyr::select(
+        -dplyr::any_of(
+          ".other_join_id"
+        )
+      )
+  }
+
+
+  # Remove internal helper columns
+  out <- out %>%
+    dplyr::select(
+      -dplyr::any_of(
+        c(
+          ".Feature_internal",
+          ".annotation_id_internal"
+        )
+      )
+    )
+
+
+  out
+})
 
 output$other_extra_cols_ui <- renderUI({
 
@@ -5849,6 +6557,27 @@ if (length(detail_cols)) {
   })
 
   # ---- Downloads
+  output$dl_annotation <- downloadHandler(
+
+  filename = function() {
+    paste0(
+      dataset_name(),
+      "_feature_table.csv"
+    )
+  },
+
+  content = function(file) {
+
+    out <- annotation_export_table()
+
+    data.table::fwrite(
+      out,
+      file,
+      na = ""
+    )
+  }
+)
+
  output$dl_volcano <- downloadHandler(
   filename = function() {
     req(rv$volcano)
