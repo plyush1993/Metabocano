@@ -7,11 +7,12 @@
 The [`Shiny App`](https://shiny.posit.co/) for making an enhanced interactive volcano plot for metabolomics studies.
 - Directly reads the output peak table from [`mzMine`](https://mzio.io/mzmine-news/), [`xcms`](https://www.bioconductor.org/packages/release/bioc/html/xcms.html), [`MS-DIAL`](https://systemsomicslab.github.io/compms/msdial/main.html), and Default format (see [`examples of inputs`](https://github.com/plyush1993/Metabocano/tree/main/toy_examples))
 - Merges with the annotation results from [`SIRIUS`](https://bio.informatik.uni-jena.de/software/sirius/), [`GNPS`](https://gnps2.org/homepage), other source
-- Intersects peak table with the annotation table from [`SIRIUS`](https://bio.informatik.uni-jena.de/software/sirius/), and Pairs List from [`GNPS`](https://gnps2.org/homepage), with dynamic network plotting
 - Performs imputation by noise, and statistical tests by group pairs
-- Generates several outputs:
+- Generates several plots:
   - interactive [`Plotly`](https://plotly.com/)-type volcano plot with built-in filters, sliders, and formatting
   - interactive [`InteractiveComplexHeatmap`](https://www.bioconductor.org/packages/release/bioc/html/InteractiveComplexHeatmap.html)-type heatmap plot with built-in filters, sliders, and formatting
+  - interactive sub-network [`igraph`](https://cran.r-project.org/web/packages/igraph/index.html)-type graph plot after intersecting the peak table with the annotation table from [`SIRIUS`](https://bio.informatik.uni-jena.de/software/sirius/), and the Pairs List from [`GNPS`](https://gnps2.org/homepage)
+- Generates several outputs:
   - table reformatted for [`MetaboAnalyst`](https://www.metaboanalyst.ca/home.xhtml) input
   - zip archive for [`AutoPlotter`](https://mpietzke.shinyapps.io/AutoPlotter/) *Compounds in Columns* input
   - table with statistics and [`SIRIUS`](https://bio.informatik.uni-jena.de/software/sirius/)/[`GNPS`](https://gnps2.org/homepage) annotations, which can be merged in [`Cytoscape`](https://cytoscape.org/) by *id* column comes from the used peak table
