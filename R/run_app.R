@@ -3,6 +3,11 @@
 #' @importFrom green bold blue
 #' @export
 run_metabocano <- function(...) {
+  app_version <- tryCatch(
+    as.character(utils::packageVersion("metabocano")),
+    error = function(e) "Dev"
+  )
+
   cat("\n")
   cat(crayon::green("             +--------------------+\n"))
   app_name <- paste0(
@@ -10,6 +15,7 @@ run_metabocano <- function(...) {
   )
   cat(crayon::green("             | "), app_name, crayon::green(" |\n"), sep = "")
   cat(crayon::green("             +--------------------+\n"))
+  cat(crayon::blue("                 Version: ", app_version, "\n", sep = ""))
   cat("\n")
   cat(crayon::blue(crayon::bold("Enhanced interactive volcano plot for metabolomics studies\n")))
   cat("\n")
