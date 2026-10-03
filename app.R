@@ -31,6 +31,9 @@ suppressPackageStartupMessages({
   library(RColorBrewer)
   library(zip)
   library(igraph)
+  library(ComplexHeatmap)
+  library(InteractiveComplexHeatmap)
+  library(ggrepel)
 })
 
 options(shiny.maxRequestSize = 1024 * 1024^2)
@@ -1044,10 +1047,40 @@ compute_stats_long <- function(df_used,
   out_list <- vector("list", nrow(comb))
 
   for (i in seq_len(nrow(comb))) {
-    gnum <- comb[i, 1] # Reference (Denominator)
-    gden <- comb[i, 2] # Comparison (Numerator)
+    gnum <- comb[i, 1] # Numerator
+    gden <- comb[i, 2] # Denominator
     comp <- paste0(gnum, " / ", gden)
 
+    if (
+  isTRUE(paired) &&
+  test %in% c("Student", "Wilcoxon")
+) {
+
+  n_num <- sum(as.character(gr) == gnum, na.rm = TRUE)
+  n_den <- sum(as.character(gr) == gden, na.rm = TRUE)
+
+  minimum_pairs <- if (test == "Student") 2L else 1L
+
+  validate(
+    need(
+      n_num == n_den,
+      paste0(
+        "Paired test: ", comp,
+        " has unequal group sizes (",
+        n_num, " and ", n_den, ")."
+      )
+    ),
+    need(
+      min(n_num, n_den) >= minimum_pairs,
+      paste0(
+        "Paired test: ", comp,
+        " needs at least ", minimum_pairs,
+        " sample pair(s)."
+      )
+    )
+  )
+}
+    
     sub <- df_used[df_used$Label %in% c(gden, gnum), c("Label", feats), drop = FALSE]
     sub$Label <- factor(as.character(sub$Label), levels = c(gden, gnum))
 
@@ -1391,39 +1424,650 @@ make_autoplotter_metadata <- function(df_used, sample_names) {
 }
 
 make_autoplotter_name_map <- function(fmap, volcano = NULL) {
-  fmap <- as.data.frame(fmap, check.names = FALSE, stringsAsFactors = FALSE)
 
+  fmap <- as.data.frame(
+    fmap,
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+
+  # Keep names and ordering consistent with the AutoPlotter data.
   out <- tibble::tibble(
     Name = as.character(fmap$Feature)
   )
 
-  if (!is.null(volcano) && all(c("Feature", "NPC#class", "ClassyFire#class") %in% names(volcano))) {
-    ann <- volcano %>%
-      dplyr::select(
-        Feature,
-        `NPC#class`,
-        `ClassyFire#class`
-      ) %>%
-      dplyr::distinct(Feature, .keep_all = TRUE) %>%
-      dplyr::mutate(
-        `NPC#class` = clean_missing_text(
-        `NPC#class`
-      ),
-      
-      `ClassyFire#class` = clean_missing_text(
-        `ClassyFire#class`
-      )
-      )
+  if (
+    is.null(volcano) ||
+    !"Feature" %in% names(volcano) ||
+    nrow(volcano) == 0
+  ) {
+    return(out)
+  }
 
-    out <- out %>%
-      dplyr::left_join(ann, by = c("Name" = "Feature"))
+  volcano <- as.data.frame(
+    volcano,
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
 
-} else {
-  out$`NPC#class` <- NA_character_
-  out$`ClassyFire#class` <- NA_character_
+  # Exclude comparison-specific statistics.
+  # Keep all feature metadata and annotation columns.
+  statistical_cols <- c(
+    "Groups",
+    "Group_num",
+    "Group_den",
+    "Adj.p-value",
+    "Mean",
+    "mean_num",
+    "mean_den",
+    "FC",
+    "TestScale",
+    "Adj.p-value.log",
+    "Significant_default"
+  )
+
+  annotation_cols <- setdiff(
+    names(volcano),
+    c("Feature", statistical_cols)
+  )
+
+  ann <- volcano %>%
+    dplyr::select(
+      Feature,
+      dplyr::all_of(annotation_cols)
+    ) %>%
+    dplyr::mutate(
+      Feature = as.character(Feature),
+      dplyr::across(
+        dplyr::where(
+          function(x) is.character(x) || is.factor(x)
+        ),
+        clean_missing_text
+      )
+    ) %>%
+    # Annotations repeat across comparisons:
+    # retain one row per feature.
+    dplyr::distinct(
+      Feature,
+      .keep_all = TRUE
+    )
+
+  out %>%
+    dplyr::left_join(
+      ann,
+      by = c("Name" = "Feature")
+    )
 }
 
-  out
+volcano_main_ui <- function() {
+
+  tagList(
+
+        div(
+      style = paste(
+        "background:rgba(255,255,255,0.95);",
+        "border:1px solid #ddd;",
+        "border-radius:8px;",
+        "padding:12px 16px;",
+        "margin-bottom:15px;"
+      ),
+
+      div(
+        style = "font-size:17px;font-weight:600;",
+        textOutput("volcano_feature_count", inline = TRUE)
+      ),
+
+      tags$details(
+  style = "margin-top:8px;",
+
+  tags$summary(
+    style = "cursor:pointer;color:#228B22;",
+    "Applied filters"
+  ),
+
+  uiOutput("volcano_applied_filters"),
+
+  tags$details(
+    style = "margin-top:12px;",
+
+    tags$summary(
+      style = "cursor:pointer;color:#228B22;",
+      "Download filtered peak table"
+    ),
+
+    div(
+      style = "margin-top:10px;",
+
+      p(
+        class = "small-note",
+        paste(
+          "Export the original peak table with only",
+          "features retained by the current filters."
+        )
+      ),
+
+      downloadButton(
+        outputId = "dl_filtered_feature_table",
+        label = "Download filtered CSV",
+        class = "btn-success"
+      )
+    )
+  )
+)
+    ),
+    
+    # ========================================================
+    # VOLCANO VIEW
+    # ========================================================
+
+    conditionalPanel(
+      condition = "!input.show_interactive_heatmap",
+
+      withSpinner(
+        plotlyOutput(
+          "volcano_plot",
+          height = "520px"
+        ),
+        type = 8,
+        color = "#66CDAA"
+      ),
+
+      div(
+        style = "height:8px;"
+      ),
+
+      uiOutput(
+        "selected_feature_panel"
+      )
+    ),
+
+
+    # ========================================================
+    # INTERACTIVE HEATMAP VIEW
+    # ========================================================
+
+    conditionalPanel(
+      condition = "input.show_interactive_heatmap",
+
+      div(
+
+        style = "
+          background: rgba(255,255,255,0.90);
+          border: 1px solid #ddd;
+          border-radius: 8px;
+          padding: 12px;
+          margin-bottom: 15px;
+        ",
+
+        h4(
+          class = "highlight",
+          "Interactive heatmap"
+        ),
+
+        uiOutput(
+          "heatmap_filter_summary"
+        ),
+
+
+        # ----------------------------------------------------
+        # Heatmap-specific settings
+        # ----------------------------------------------------
+
+        fluidRow(
+
+          column(
+            width = 4,
+
+            selectInput(
+              "hm_scale",
+              "Scaling:",
+              choices = c(
+                "Unit variance, no centering" = "uv",
+                "Z-score" = "zscore",
+                "None" = "none"
+              ),
+              selected = "uv"
+            )
+          ),
+
+          column(
+            width = 4,
+
+            selectInput(
+              "hm_distance",
+              "Clustering distance:",
+              choices = c(
+                "Euclidean" = "euclidean",
+                "Manhattan" = "manhattan",
+                "Correlation" = "correlation"
+              ),
+              selected = "euclidean"
+            )
+          ),
+
+          column(
+            width = 4,
+
+            selectInput(
+              "hm_method",
+              "Clustering method:",
+              choices = c(
+                "Ward.D2" = "ward.D2",
+                "Complete" = "complete",
+                "Average" = "average"
+              ),
+              selected = "ward.D2"
+            )
+          )
+        ),
+
+
+        fluidRow(
+
+          column(
+            width = 3,
+
+            checkboxInput(
+              "hm_cluster_samples",
+              "Cluster samples",
+              value = TRUE
+            )
+          ),
+
+          column(
+            width = 3,
+
+            checkboxInput(
+              "hm_cluster_features",
+              "Cluster features",
+              value = TRUE
+            )
+          ),
+
+          column(
+            width = 3,
+
+            checkboxInput(
+              "hm_show_samples",
+              "Show sample names",
+              value = FALSE
+            )
+          ),
+
+          column(
+            width = 3,
+
+            checkboxInput(
+              "hm_show_features",
+              "Show feature names",
+              value = FALSE
+            ),
+            
+            checkboxInput(
+                "hm_show_borders",
+                "Show cell borders",
+                value = TRUE
+              )
+          )
+        ),
+
+
+        fluidRow(
+
+          column(
+            width = 4,
+
+            selectInput(
+              "hm_palette",
+              "Heatmap palette:",
+              choices = c(
+                "Viridis" = "viridis",
+                "Magma" = "magma",
+                "Blue - White - Red" = "bwr"
+              ),
+              selected = "bwr"
+            )
+          ),
+
+          column(
+            width = 4,
+
+            selectInput(
+              "hm_group_palette",
+              "Group annotation palette:",
+              choices = palette_choices,
+              selected = "Dark2"
+            )
+          )
+        )
+      ),
+
+
+  tagList(
+  conditionalPanel(
+    condition = "output.heatmap_has_data === 'yes'",
+
+    InteractiveComplexHeatmap::InteractiveComplexHeatmapOutput(
+      heatmap_id = "metabocano_heatmap",
+      layout = "1-(2|3)",
+      width1 = 700,
+      height1 = 550,
+      width2 = 350,
+      height2 = 300,
+      action = "click",
+      cursor = TRUE,
+      output_ui = shiny::uiOutput("heatmap_feature_info")
+    )
+  ),
+
+  conditionalPanel(
+    condition = "output.heatmap_has_data !== 'yes'",
+
+    div(
+      class = "small-note",
+      paste(
+        "No heatmap is available for the current selection.",
+        "Check the filters and preprocessing status."
+      )
+    )
+  )
+)
+    )
+  )
+}
+
+add_volcano_top_labels <- function(
+    p, dd, n = 0L, width_px = 800, height_px = 520,
+    label_col = "Feature"
+) {
+
+  n <- suppressWarnings(as.integer(n))
+  if (length(n) != 1L || is.na(n) || n <= 0L) {
+    return(p)
+  }
+
+  # Keep valid plotted coordinates.
+  d <- as.data.frame(dd, stringsAsFactors = FALSE)
+
+  d <- d[
+    is.finite(d$FC) & is.finite(d$plot_y),
+    ,
+    drop = FALSE
+  ]
+
+  if (!nrow(d)) return(p)
+
+  # Rank only valid FDR values.
+  d$.score <- NA_real_
+
+  valid <- is.finite(d$`Adj.p-value`) &
+    d$`Adj.p-value` >= 0 &
+    d$`Adj.p-value` <= 1
+
+  d$.score[valid] <-
+    -log10(
+      pmax(d$`Adj.p-value`[valid], .Machine$double.xmin)
+    ) * abs(d$FC[valid])
+
+  ranked <- which(is.finite(d$.score))
+
+  ranked <- ranked[
+    order(
+      -d$.score[ranked],
+      as.character(d$Feature[ranked]),
+      ranked
+    )
+  ]
+
+  # One label per feature.
+  # With multiple comparisons, use its highest-scoring point.
+  ranked <- ranked[
+    !duplicated(as.character(d$Feature[ranked]))
+  ]
+
+  selected <- head(ranked, n)
+
+  if (!length(selected)) return(p)
+
+  # Put labeled points first so ggrepel's label numbering
+  # corresponds to these rows.
+  d <- d[
+    c(selected, setdiff(seq_len(nrow(d)), selected)),
+    ,
+    drop = FALSE
+  ]
+
+  n_labels <- length(selected)
+
+  # Read the selected label column.
+if (
+  length(label_col) != 1L ||
+  is.na(label_col) ||
+  !label_col %in% names(d)
+) {
+  label_col <- "Feature"
+}
+
+label_values <- clean_missing_text(
+  as.character(d[[label_col]])
+)
+
+# Missing annotations fall back to the Feature name.
+missing_label <- is.na(label_values) |
+  !nzchar(trimws(label_values))
+
+label_values[missing_label] <-
+  as.character(d$Feature[missing_label])
+
+d$.label <- ""
+d$.label[seq_len(n_labels)] <-
+  label_values[seq_len(n_labels)]
+
+  padded_range <- function(x) {
+    r <- range(x, finite = TRUE)
+    span <- diff(r)
+
+    if (span == 0) {
+      span <- max(abs(r), 1)
+    }
+
+    r + c(-1, 1) * span * 0.08
+  }
+
+  xr <- padded_range(d$FC)
+  yr <- padded_range(d$plot_y)
+
+  # Off-screen plot used only to calculate label positions.
+  label_plot <- ggplot2::ggplot(
+    d,
+    ggplot2::aes(
+      x = FC,
+      y = plot_y,
+      label = .label
+    )
+  ) +
+    ggrepel::geom_text_repel(
+      size = 3.2,
+      family = "sans",
+      seed = 123,
+      max.overlaps = Inf,
+      max.time = 1,
+      max.iter = 10000,
+      box.padding = 0.5,
+      point.padding = 0.3,
+      point.size = 3,
+      min.segment.length = 0
+    ) +
+    ggplot2::coord_cartesian(
+      xlim = xr,
+      ylim = yr,
+      expand = FALSE
+    ) +
+    ggplot2::theme_void() +
+    ggplot2::theme(
+      plot.margin = grid::unit(rep(0, 4), "pt")
+    )
+
+  grDevices::pdf(
+    file = NULL,
+    width = max(300, width_px - 160) / 96,
+    height = max(250, height_px - 120) / 96
+  )
+
+  on.exit(grDevices::dev.off(), add = TRUE)
+
+  grid::grid.newpage()
+  grid::grid.draw(ggplot2::ggplotGrob(label_plot))
+  grid::grid.force()
+
+  # Enter the panel viewport to interpret ggrepel coordinates.
+  tree <- grid::grid.ls(
+    viewports = TRUE,
+    print = FALSE
+  )
+
+  panel_vp <- tree$name[
+    tree$type == "vpListing" &
+      grepl("^panel([.-]|$)", tree$name)
+  ]
+
+  if (!length(panel_vp)) {
+    stop("Could not locate the ggrepel panel viewport.")
+  }
+
+  grid::seekViewport(panel_vp[[1]])
+
+  annotations <- lapply(seq_len(n_labels), function(i) {
+
+    label_grob <- grid::grid.get(
+      paste0("textrepelgrob", i),
+      grep = FALSE,
+      global = TRUE
+    )
+
+    if (is.null(label_grob)) {
+      stop("Could not retrieve a ggrepel label position.")
+    }
+
+    nx <- grid::convertX(
+      label_grob$x, "npc", valueOnly = TRUE
+    )
+
+    ny <- grid::convertY(
+      label_grob$y, "npc", valueOnly = TRUE
+    )
+
+    list(
+      # Connector points to the original feature.
+      x = d$FC[i],
+      y = d$plot_y[i],
+      xref = "x",
+      yref = "y",
+
+      # Repelled label position.
+      ax = xr[1] + nx * diff(xr),
+      ay = yr[1] + ny * diff(yr),
+      axref = "x",
+      ayref = "y",
+
+      text = as.character(
+        htmltools::htmlEscape(d$.label[i])
+      ),
+      showarrow = TRUE,
+      arrowhead = 0,
+      arrowwidth = 0.8,
+      arrowcolor = "grey50",
+      xanchor = "center",
+      yanchor = "middle",
+      font = list(
+        size = 12,
+        color = "black",
+        family = "Arial"
+      ),
+      captureevents = FALSE
+    )
+  })
+
+  plotly::layout(
+    p,
+    annotations = annotations,
+    xaxis = list(range = xr),
+    yaxis = list(range = yr)
+  )
+}
+
+annotation_panel <- function(
+    switch_id, label, tooltip_id, tooltip_text, ...
+) {
+  div(
+    style = paste(
+      "background:rgba(255,255,255,0.95);",
+      "border:1px solid #d9e2dc;",
+      "border-left:4px solid #5cb85c;",
+      "border-radius:8px;",
+      "padding:14px;",
+      "margin-bottom:12px;"
+    ),
+
+    div(
+      style = paste(
+        "display:flex;",
+        "align-items:flex-start;",
+        "justify-content:space-between;",
+        "gap:8px;"
+      ),
+
+      shinyWidgets::materialSwitch(
+        inputId = switch_id,
+        label = label,
+        value = FALSE,
+        status = "success",
+        width = "auto"
+      ),
+
+      actionButton(
+        inputId = tooltip_id,
+        label = "?",
+        class = "btn-xs",
+        style = "font-weight:bold;flex-shrink:0;"
+      )
+    ),
+
+    shinyBS::bsTooltip(
+      id = tooltip_id,
+      title = tooltip_text,
+      placement = "right",
+      trigger = "click",
+      options = list(container = "body")
+    ),
+
+    conditionalPanel(
+      condition = paste0("input.", switch_id, " == true"),
+
+      tags$details(
+        open = NA,
+
+        tags$summary(
+          style = paste(
+            "cursor:pointer;",
+            "color:#27823b;",
+            "font-weight:600;",
+            "padding:6px 0;"
+          ),
+          "Upload and column settings"
+        ),
+
+        div(
+          style = paste(
+            "border-top:1px solid #e5e5e5;",
+            "padding-top:12px;",
+            "margin-top:6px;"
+          ),
+          ...
+        )
+      )
+    )
+  )
 }
 
 # ----------------------------- UI -----------------------------------------
@@ -1431,6 +2075,58 @@ make_autoplotter_name_map <- function(fmap, volcano = NULL) {
 ui <- fluidPage(
   useShinyjs(),
 
+  tags$head(
+  tags$script(HTML("
+    (function () {
+
+      function fixFileInputs() {
+        document.querySelectorAll('input[type=file]').forEach(
+          function (input) {
+
+            const button = input.closest('.btn-file');
+
+            if (!button) return;
+
+            // Keep the hidden input inside its Browse button.
+            button.style.setProperty(
+              'position', 'relative', 'important'
+            );
+
+            input.style.setProperty(
+              'position', 'absolute', 'important'
+            );
+            input.style.setProperty(
+              'top', '0', 'important'
+            );
+            input.style.setProperty(
+              'left', '0', 'important'
+            );
+            input.style.setProperty(
+              'width', '1px', 'important'
+            );
+            input.style.setProperty(
+              'height', '1px', 'important'
+            );
+            input.style.setProperty(
+              'opacity', '0', 'important'
+            );
+            input.style.setProperty(
+              'pointer-events', 'none', 'important'
+            );
+          }
+        );
+      }
+
+      // Inputs present when the page first loads.
+      $(fixFileInputs);
+
+      // Inputs subsequently created by renderUI().
+      $(document).on('shiny:bound', fixFileInputs);
+
+    })();
+  "))
+),
+  
 tags$head(tags$style(HTML("
   .app-footer { position: fixed; left:0; right:0; bottom:0; 
                 text-align:center; font-size:12px; opacity:0.75;
@@ -1584,11 +2280,41 @@ tags$head(tags$style(HTML("
   }
 "))),
 
-div(
-  class = "app-footer",
-  HTML('Created by: Ivan Plyushchenko &nbsp;|&nbsp;
-       <a href="https://github.com/plyush1993/Metabocano" target="_blank">GitHub repository</a>')
-),
+div(class = "app-footer", HTML('
+    <span class="footer-text">by Plyushchenko I.V.</span>
+    <span class="footer-sep">&nbsp;|&nbsp;</span>
+    <span class="footer-text">GPLv3</span>
+    <span class="footer-sep">&nbsp;|&nbsp;</span>
+     <a id="latest-release-link"
+     class="footer-link"
+     href="https://github.com/plyush1993/metabocano/releases/latest"
+     target="_blank">v. </a>
+    
+    <script>
+    fetch("https://api.github.com/repos/plyush1993/metabocano/releases/latest")
+      .then(function(response) {
+        if (!response.ok) throw new Error("GitHub release request failed");
+        return response.json();
+      })
+      .then(function(data) {
+        var link = document.getElementById("latest-release-link");
+        if (link && data.tag_name) {
+          link.textContent = "v. " + data.tag_name;
+          if (data.html_url) {
+            link.href = data.html_url;
+          }
+        }
+      })
+      .catch(function(error) {
+        var link = document.getElementById("latest-release-link");
+        if (link) {
+          link.textContent = "Latest release";
+          link.href = "https://github.com/plyush1993/metabocano/releases/latest";
+        }
+      });
+  </script>
+    
+  ')),
   
   div(
   style = "
@@ -1849,83 +2575,33 @@ conditionalPanel(
 checkboxInput("show_labels_table", "Show labels table", TRUE),
 
           h3(class = "highlight", "Join with Annotation"),
-      div(
-  style = "
-    display: flex;
-    align-items: center;
-    margin-bottom: 10px;
-  ",
 
-  materialSwitch(
-    inputId = "use_peak_extra_cols",
-    label = "Join with other peak table column",
-    value = FALSE,
-    status = "success",
-    width = "auto"
-  ),
-  
-  actionButton(
-          inputId = "btnAD", 
-          label = "?", 
-          class = "btn-xs", 
-          style = "font-weight: bold; margin-left: 10px; margin-top: -20px;"
-        )
-),
+annotation_panel(
+  switch_id = "use_peak_extra_cols",
+  label = "Additional peak-table columns",
+  tooltip_id = "btnAD",
 
-bsTooltip(
-        id = "btnAD", 
-        title = paste0(
+  tooltip_text = paste0(
     "Selected columns will be added to the downloaded volcano table ",
-      "and displayed after clicking a volcano point."
-  ), 
-        placement = "right", 
-        trigger = "click", 
-        options = list(container = "body")
-      ),
+    "and displayed after clicking a volcano point."
+  ),
 
-conditionalPanel(
-  condition = "input.use_peak_extra_cols == true",
-
-  uiOutput(
-    "peak_extra_cols_ui"
-  )
+  uiOutput("peak_extra_cols_ui")
 ),
 
-      div(
-        style = "display: flex; align-items: center; margin-bottom: 15px;",
-        
-        materialSwitch(
-          inputId = "use_sirius", 
-          label = "Join SIRIUS summary", 
-          value = FALSE, 
-          status = "success", 
-          width = "auto"
-        ),
-        
-        actionButton(
-          inputId = "btn5", 
-          label = "?", 
-          class = "btn-xs", 
-          style = "font-weight: bold; margin-left: 10px; margin-top: -20px;"
-        )
-      ),
-      bsTooltip(
-        id = "btn5", 
-        title = paste0(
-    "<b>Join SIRIUS annotations summary with the processed table.</b><br>",
-    "The selected peak-table <em>Feature ID</em> column is matched ",
-    "to the selected SIRIUS mapping ID column.<br>",
-    "Default SIRIUS mapping ID: <em>mappingFeatureId</em><br>",
-    "Default NPC column: <em>NPS#class</em><br>",
-    "Default ClassyFire column: <em>ClassyFire#class</em>"
-  ), 
-        placement = "right", 
-        trigger = "click", 
-        options = list(container = "body")
-      ),
+annotation_panel(
+  switch_id = "use_sirius",
+  label = "SIRIUS / CANOPUS annotation",
+  tooltip_id = "btn5",
 
-      conditionalPanel(
-  condition = "input.use_sirius",
+  tooltip_text = paste0(
+    "<b>Join SIRIUS annotations with the processed table.</b><br>",
+    "The selected peak-table Feature ID column is matched ",
+    "to the selected SIRIUS mapping ID column.<br>",
+    "Default mapping ID: <em>mappingFeatureId</em><br>",
+    "Default NPC column: <em>NPC#class</em><br>",
+    "Default ClassyFire column: <em>ClassyFire#class</em>"
+  ),
 
   fileInput(
     "file_sirius",
@@ -1936,45 +2612,18 @@ conditionalPanel(
   uiOutput("sirius_pickers")
 ),
 
-div(
-  style = "display: flex; align-items: center; margin-bottom: 15px;",
+annotation_panel(
+  switch_id = "use_gnps_annotation",
+  label = "GNPS library annotation",
+  tooltip_id = "btn_gnps_annotation",
 
-  materialSwitch(
-    inputId = "use_gnps_annotation",
-    label = "Join GNPS annotation",
-    value = FALSE,
-    status = "success",
-    width = "auto"
-  ),
-
-  actionButton(
-    inputId = "btn_gnps_annotation",
-    label = "?",
-    class = "btn-xs",
-    style = "
-      font-weight: bold;
-      margin-left: 10px;
-      margin-top: -20px;
-    "
-  )
-),
-
-bsTooltip(
-  id = "btn_gnps_annotation",
-  title = paste0(
+  tooltip_text = paste0(
     "<b>Join GNPS library annotations with the processed table.</b><br>",
-    "The selected peak-table <em>Feature ID</em> column is matched ",
+    "The selected peak-table Feature ID column is matched ",
     "to the selected GNPS ID column.<br>",
     "Default GNPS ID: <em>#Scan#</em><br>",
     "Default annotation: <em>Compound_Name</em>"
   ),
-  placement = "right",
-  trigger = "click",
-  options = list(container = "body")
-),
-
-conditionalPanel(
-  condition = "input.use_gnps_annotation",
 
   fileInput(
     "file_gnps_annotation",
@@ -1985,45 +2634,41 @@ conditionalPanel(
   uiOutput("gnps_annotation_pickers")
 ),
 
-div(
-  style = "display: flex; align-items: center; margin-bottom: 15px;",
+annotation_panel(
+  switch_id = "use_main_gnps_pairs",
+  label = "GNPS network / ComponentIndex",
+  tooltip_id = "btn_main_gnps_pairs",
 
-  materialSwitch(
-    inputId = "use_other_annotation",
-    label = "Join Other Annotation Source",
-    value = FALSE,
-    status = "success",
-    width = "auto"
+  tooltip_text = paste0(
+    "<b>Enable filtering by GNPS network component.</b><br>",
+    "Select the peak-table matching ID column, both pairs-file ",
+    "node ID columns, and the component column.<br>",
+    "Default pairs columns: <em>CLUSTERID1</em>, ",
+    "<em>CLUSTERID2</em>, and <em>ComponentIndex</em>.<br>",
+    "Both endpoints are assigned to their component."
   ),
 
-  actionButton(
-    inputId = "btn_other_annotation",
-    label = "?",
-    class = "btn-xs",
-    style = "
-      font-weight: bold;
-      margin-left: 10px;
-      margin-top: -20px;
-    "
-  )
+  fileInput(
+    "file_main_gnps_pairs",
+    "Upload GNPS network pairs (.tsv/.txt/.csv)",
+    accept = c(".tsv", ".txt", ".csv")
+  ),
+
+  uiOutput("main_gnps_pairs_pickers")
 ),
 
-bsTooltip(
-  id = "btn_other_annotation",
-  title = paste0(
-    "<b>Join annotations from any external table.</b><br>",
+annotation_panel(
+  switch_id = "use_other_annotation",
+  label = "Other annotation source",
+  tooltip_id = "btn_other_annotation",
+
+  tooltip_text = paste0(
+    "<b>Join annotations from an external table.</b><br>",
     "Choose a peak-table ID column and the corresponding ",
     "ID column in the annotation file.<br>",
-    "By default, the peak-table <em>Feature ID</em> column is used when available.<br>",
-    "Choose one primary annotation column and optionally add additional columns."
+    "Choose one primary annotation column and optionally ",
+    "add additional columns."
   ),
-  placement = "right",
-  trigger = "click",
-  options = list(container = "body")
-),
-
-conditionalPanel(
-  condition = "input.use_other_annotation",
 
   fileInput(
     "file_other_annotation",
@@ -2036,7 +2681,7 @@ conditionalPanel(
 
           tags$hr(),
           h3(class = "highlight", "Imputation by Noise"),
-          radioButtons("do_mvi", "Imputation:", c("No"="no", "Yes"="yes"), selected = "yes", inline = TRUE),
+          radioButtons("do_mvi", "Imputation:", c("No"="no", "Yes"="yes"), selected = "no", inline = TRUE),
           conditionalPanel(
             condition = "input.do_mvi == 'yes'",
             conditionalPanel(
@@ -2065,7 +2710,31 @@ conditionalPanel(
           selectInput("p_adjust", "p-adjust:", c("BH","holm","hochberg","hommel","bonferroni","BY","fdr","none"), selected = "BH"),
           conditionalPanel(
             condition = "input.test_type == 'Student' || input.test_type == 'Wilcoxon'",
-            checkboxInput("paired", "Paired test", FALSE)
+            checkboxInput(
+  "paired",
+  "Paired test — samples paired by order",
+  FALSE
+),
+
+conditionalPanel(
+  condition = "input.paired == true",
+
+  helpText(
+    paste(
+      "Samples are paired by their order within each group.",
+      "Check every pair below before running preprocessing.",
+      "Sample names are not used to identify matching subjects."
+    )
+  ),
+
+  tags$details(
+    tags$summary("Show sample pairs"),
+    div(
+      style = "overflow-x: auto;",
+      tableOutput("paired_sample_preview")
+    )
+  )
+)
           ),
           conditionalPanel(
             condition = "input.test_type == 'Student'",
@@ -2146,14 +2815,30 @@ conditionalPanel(
     tabPanel("2) Volcano explorer", value = "volcano",
       sidebarLayout(
         sidebarPanel(uiOutput("volcano_sidebar")),
-        mainPanel(uiOutput("volcano_main"))
+        mainPanel(
+  conditionalPanel(
+    condition = "output.volcano_ready === 'yes'",
+    volcano_main_ui()
+  )
+)
       )
     ),
 
-tabPanel("App) SIRIUS & GNPS stats", value = "sirius_gnps",
-  sidebarLayout(
-    sidebarPanel(uiOutput("sirius_gnps_sidebar")),
-    mainPanel(uiOutput("sirius_gnps_main"))
+navbarMenu(
+  title = "3) Other Utils",
+
+  tabPanel(
+    title = "SIRIUS & GNPS merging",
+    value = "sirius_gnps",
+
+    sidebarLayout(
+      sidebarPanel(
+        uiOutput("sirius_gnps_sidebar")
+      ),
+      mainPanel(
+        uiOutput("sirius_gnps_main")
+      )
+    )
   )
 )
 
@@ -2324,6 +3009,87 @@ output$upload_tab_error <- renderUI({
     !is.null(rv$volcano) && nrow(rv$volcano) > 0
   })
   
+  processing_input_ids <- c(
+  "software_tool",
+  "feature_id_source",
+  "annotation_id_col",
+  "mz_col",
+  "rt_col",
+  "mz_rt_sep",
+
+  "sample_mode",
+  "sample_keywords",
+  "sample_cols_manual",
+
+  "comparison_mode",
+  "ref_group",
+  "manual_comparisons",
+  "test_type",
+  "p_adjust",
+  "paired",
+  "eqvar",
+  "log2_test",
+  "standard_scaling",
+
+  "do_mvi",
+  "noise_mode",
+  "noise_quantile",
+  "noise_manual",
+  "noise_sd",
+
+  "use_peak_extra_cols",
+  "peak_extra_cols",
+
+  "use_sirius",
+  "file_sirius",
+  "sirius_idcol",
+  "sirius_npcol",
+  "sirius_cfcol",
+  "use_sirius_extra_cols",
+  "sirius_extra_cols",
+
+  "use_gnps_annotation",
+  "file_gnps_annotation",
+  "gnps_annotation_idcol",
+  "gnps_annotation_col",
+  "use_gnps_extra_cols",
+  "gnps_extra_cols",
+
+  "use_other_annotation",
+  "file_other_annotation",
+  "other_peak_id_col",
+  "other_annotation_idcol",
+  "other_annotation_col",
+  "use_other_extra_cols",
+  "other_extra_cols"
+)
+
+observeEvent(
+  lapply(processing_input_ids, function(id) input[[id]]),
+
+  {
+    if (is.null(rv$volcano)) {
+      return(invisible(NULL))
+    }
+
+    rv$raw <- NULL
+    rv$mat <- NULL
+    rv$fmap <- NULL
+    rv$labels <- NULL
+    rv$df_used <- NULL
+    rv$volcano <- NULL
+
+    showNotification(
+      "Processing settings changed. Run preprocessing again.",
+      type = "warning",
+      duration = 6
+    )
+  },
+
+  ignoreInit = TRUE,
+  priority = 100
+)
+  
   dataset_name <- reactive({
   nm <- input$file_data$name %||% "dataset.csv"
   tools::file_path_sans_ext(basename(nm))
@@ -2391,12 +3157,67 @@ raw_df <- reactive({
     )
   })
 
-}) %>%
-  bindCache(
-    input$file_data$name,
-    input$software_tool
+}) 
+
+  output$volcano_label_column_ui <- renderUI({
+
+  req(procReady(), rv$volcano)
+
+  excluded <- c(
+    "Groups",
+    "Group_num",
+    "Group_den",
+    "Adj.p-value",
+    "Mean",
+    "mean_num",
+    "mean_den",
+    "FC",
+    "TestScale",
+    "Adj.p-value.log",
+    "Significant_default",
+    "key",
+    "plot_y",
+    "FC_status"
   )
 
+  available <- setdiff(
+    names(rv$volcano),
+    excluded
+  )
+
+  preferred <- c(
+    "Feature",
+    "id",
+    "GNPS_annotation",
+    "Other_annotation",
+    "NPC#class",
+    "ClassyFire#class"
+  )
+
+  available <- c(
+    intersect(preferred, available),
+    setdiff(available, preferred)
+  )
+
+  req(length(available) > 0)
+
+  selected <- isolate(input$volcano_label_column)
+
+  if (
+    is.null(selected) ||
+    !selected %in% available
+  ) {
+    selected <- available[[1]]
+  }
+
+  selectInput(
+    "volcano_label_column",
+    "Label text:",
+    choices = available,
+    selected = selected
+  )
+})
+  
   # ---- Column Pickers (Smart Defaults) ----
 output$col_pickers <- renderUI({
 
@@ -2625,9 +3446,16 @@ if (is.null(def_ann_id)) {
 }, ignoreInit = TRUE)
   
   output$raw_header <- renderUI({
-    req(raw_df())
-    h3(sprintf("Raw dataset: %d rows × %d columns", nrow(raw_df()), ncol(raw_df())))
-  })
+  req(raw_df())
+
+  h3(
+    sprintf(
+      "Raw dataset: %d Features × %d Samples",
+      nrow(raw_df()),
+      length(sample_cols_selected())
+    )
+  )
+})
 
   output$raw_preview <- renderDT({
     req(raw_df())
@@ -3256,6 +4084,66 @@ metadata_labels <- reactive({
     )
 })
 
+  output$paired_sample_preview <- renderTable({
+
+  req(
+    isTRUE(input$paired),
+    input$test_type %in% c("Student", "Wilcoxon")
+  )
+
+  labs <- as.character(labels_vec())
+  samples <- sample_names()
+
+  validate(
+    need(
+      length(labs) == length(samples),
+      "Sample names and labels do not match."
+    )
+  )
+
+  if (identical(input$comparison_mode, "manual")) {
+
+    comparisons <- selected_manual_comparisons()
+
+  } else {
+
+    req(input$ref_group)
+
+    others <- setdiff(
+      sort(unique(labs)),
+      input$ref_group
+    )
+
+    comparisons <- data.frame(
+      Group_num = rep(input$ref_group, length(others)),
+      Group_den = others,
+      stringsAsFactors = FALSE
+    )
+  }
+
+  rows <- lapply(seq_len(nrow(comparisons)), function(i) {
+
+    group_a <- comparisons$Group_num[i]
+    group_b <- comparisons$Group_den[i]
+
+    a <- samples[which(labs == group_a)]
+    b <- samples[which(labs == group_b)]
+
+    # Padding makes an unmatched sample visible.
+    n <- max(length(a), length(b))
+
+    data.frame(
+      Comparison = rep(paste(group_a, "/", group_b), n),
+      Pair = seq_len(n),
+      Numerator_sample = a[seq_len(n)],
+      Denominator_sample = b[seq_len(n)],
+      stringsAsFactors = FALSE
+    )
+  })
+
+  dplyr::bind_rows(rows)
+
+}, striped = TRUE, bordered = TRUE, na = "UNMATCHED")
 
 output$comparison_picker <- renderUI({
   req(labels_vec())
@@ -4106,7 +4994,16 @@ annotation_export_table <- reactive({
       )
     }
 
-
+    selected_sirius_extra <- unique(c(
+  selected_sirius_extra,
+  grep(
+    "probability",
+    names(s),
+    ignore.case = TRUE,
+    value = TRUE
+  )
+))
+    
     sirius_colmap <- make_prefixed_colmap(
       selected_sirius_extra,
       prefix = "SIRIUS_"
@@ -4927,7 +5824,7 @@ sirius_stats_data <- reactive({
 
   keep_ids <- selected_peak_ids_for_sirius()
 
-  if (!is.null(keep_ids) && length(keep_ids)) {
+  if (!is.null(keep_ids)) {
     out <- out %>%
       dplyr::filter(SIRIUS_ID %in% keep_ids)
   }
@@ -5897,55 +6794,11 @@ if (
       )
 
 
-    gnps_by_node <- volcano_stats_long %>%
-
-      dplyr::group_by(
-        ClusterID
-      ) %>%
-
-      dplyr::summarise(
-
-        GNPS_annotation = {
-
-          values <- clean_missing_text(
-            GNPS_annotation
-          )
-
-          values <- unique(
-            values[
-              !is.na(values)
-            ]
-          )
-
-          if (length(values)) {
-
-            paste(
-              values,
-              collapse = " | "
-            )
-
-          } else {
-
-            NA_character_
-          }
-        },
-
-        .groups = "drop"
-      )
-
-
     node_data <- node_data %>%
-
-      dplyr::left_join(
-        statistics_by_node,
-        by = "ClusterID"
-      ) %>%
-
-      dplyr::left_join(
-        gnps_by_node,
-        by = "ClusterID"
-      )
-
+  dplyr::left_join(
+    statistics_by_node,
+    by = "ClusterID"
+  )
 
     volcano_added <- TRUE
   }
@@ -5957,8 +6810,66 @@ if (!"Statistical_results" %in% names(node_data)) {
 }
 
 
-if (!"GNPS_annotation" %in% names(node_data)) {
-  node_data$GNPS_annotation <- NA_character_
+# Load feature annotations independently of the statistics switch.
+annotation_cols <- c(
+  "GNPS_annotation",
+  "Other_annotation"
+)
+
+if (
+  !is.null(rv$volcano) &&
+  is.data.frame(rv$volcano) &&
+  nrow(rv$volcano) > 0 &&
+  "id" %in% names(rv$volcano)
+) {
+  annotations <- as.data.frame(
+    rv$volcano,
+    check.names = FALSE
+  )
+
+  for (column in annotation_cols) {
+    if (!column %in% names(annotations)) {
+      annotations[[column]] <- NA_character_
+    }
+  }
+
+  annotations_by_node <- annotations %>%
+    dplyr::mutate(
+      ClusterID = trimws(as.character(id))
+    ) %>%
+    dplyr::filter(
+      !is.na(ClusterID),
+      nzchar(ClusterID)
+    ) %>%
+    dplyr::group_by(ClusterID) %>%
+    dplyr::summarise(
+      dplyr::across(
+        dplyr::all_of(annotation_cols),
+        ~ {
+          values <- clean_missing_text(.x)
+          values <- unique(values[!is.na(values)])
+
+          if (length(values)) {
+            paste(values, collapse = " | ")
+          } else {
+            NA_character_
+          }
+        }
+      ),
+      .groups = "drop"
+    )
+
+  node_data <- dplyr::left_join(
+    node_data,
+    annotations_by_node,
+    by = "ClusterID"
+  )
+}
+
+for (column in annotation_cols) {
+  if (!column %in% names(node_data)) {
+    node_data[[column]] <- NA_character_
+  }
 }
 
 
@@ -5977,6 +6888,11 @@ gnps_text[
     !nzchar(gnps_text)
 ] <- "NA"
 
+other_text <- clean_missing_text(
+  node_data$Other_annotation
+)
+
+other_text[is.na(other_text)] <- "NA"
 
 node_data$Hover <- paste0(
 
@@ -5993,6 +6909,12 @@ node_data$Hover <- paste0(
   input$stats_sirius_col,
   ":</b> ",
   sirius_text,
+
+  "<br><b>GNPS annotation:</b> ",
+htmltools::htmlEscape(gnps_text),
+
+"<br><b>Other annotation:</b> ",
+htmltools::htmlEscape(other_text),
 
   "<br><b>Selected class:</b> ",
   ifelse(
@@ -6020,9 +6942,6 @@ if (volcano_added) {
   node_data$Hover <- paste0(
 
     node_data$Hover,
-
-    "<br><b>GNPS annotation:</b> ",
-    gnps_text,
 
     "<br><br><b>Processed statistical comparisons</b>",
 
@@ -6325,6 +7244,13 @@ output$gnps_network_node_details <- renderUI({
     gnps_value <- "NA"
   }
 
+  other_value <- clean_missing_text(
+  row$Other_annotation[1]
+)
+
+if (is.na(other_value)) {
+  other_value <- "NA"
+}
 
   format_one <- function(x) {
 
@@ -6596,9 +7522,14 @@ output$gnps_network_node_details <- renderUI({
       ),
 
       tags$li(
-        strong("GNPS annotation: "),
-        gnps_value
-      )
+  strong("GNPS annotation: "),
+  gnps_value
+),
+
+tags$li(
+  strong("Other annotation: "),
+  other_value
+)
     ),
 
 
@@ -6962,6 +7893,16 @@ if (
     )
   }
 
+  selected_sirius_extra <- unique(c(
+  selected_sirius_extra,
+  grep(
+    "probability",
+    names(s),
+    ignore.case = TRUE,
+    value = TRUE
+  )
+))
+  
   sirius_colmap <- make_prefixed_colmap(
     selected_sirius_extra,
     prefix = "SIRIUS_"
@@ -7753,16 +8694,6 @@ if (
   }
 }
 
-      volc <- volc %>%
-        mutate(
-          mz = round(mz, 6),
-          RT = round(RT, 4),
-          Mean = signif(Mean, 4),
-          FC = round(FC, 4),
-          `Adj.p-value` = as.numeric(`Adj.p-value`),
-          `Adj.p-value.log` = round(`Adj.p-value.log`, 5)
-        )
-
       rv$raw <- built()$raw
       rv$mat <- X
       rv$fmap <- fmap
@@ -7804,6 +8735,14 @@ if (
       updateMaterialSwitch(session, "use_fc_filter",  value = FALSE)
       updateMaterialSwitch(session, "use_npc_filter", value = FALSE)
       updateMaterialSwitch(session, "use_classyfire_filter", value = FALSE)
+      updateMaterialSwitch(session, "use_gnps_annotated_filter",value = FALSE)
+      updateMaterialSwitch(session, "use_other_annotated_filter", value = FALSE)
+      updateMaterialSwitch(session, "use_npc_probability", value = FALSE)
+      updateMaterialSwitch(session, "use_classyfire_probability", value = FALSE)
+      updateNumericInput(session, "npc_probability_min", value = 0.9)
+      updateNumericInput(session, "classyfire_probability_min", value = 0.9)
+      updateMaterialSwitch(session, "use_component_filter", value = FALSE)
+      updatePickerInput(session, "volcano_components", selected = character(0))
       
       # pickers / radios
       updatePickerInput(session, "sel_feat", selected = character(0))
@@ -7856,6 +8795,159 @@ if (
       updateSelectInput(session, "box_palette", selected = "Dark2")
     })
   
+  # Nested probability controls for one SIRIUS annotation system.
+sirius_probability_controls <- function(
+    prefix, family, annotation_column
+) {
+
+  columns <- names(rv$volcano)
+
+  score_cols <- columns[
+    grepl(
+      paste0("^SIRIUS_", family, "#"),
+      columns,
+      ignore.case = TRUE
+    ) &
+      grepl(
+        "probability",
+        columns,
+        ignore.case = TRUE
+      )
+  ]
+
+  # Prefer the score corresponding to the selected annotation level.
+  expected <- paste0(
+    "SIRIUS_",
+    annotation_column,
+    " Probability"
+  )
+
+  preferred <- score_cols[
+    tolower(score_cols) %in% tolower(expected)
+  ]
+
+  selected <- isolate(
+    input[[paste0(prefix, "_probability_col")]]
+  )
+
+  if (
+    is.null(selected) ||
+    !selected %in% score_cols
+  ) {
+    selected <- if (length(preferred)) {
+      preferred[[1]]
+    } else if (length(score_cols)) {
+      score_cols[[1]]
+    } else {
+      character(0)
+    }
+  }
+
+  tagList(
+
+    materialSwitch(
+      inputId = paste0("use_", prefix, "_probability"),
+      label = paste("Also filter", family, "by probability"),
+      value = FALSE,
+      status = "success"
+    ),
+
+    conditionalPanel(
+      condition = paste0(
+        "input.use_", prefix, "_probability == true"
+      ),
+
+      if (length(score_cols)) {
+
+        tagList(
+          selectInput(
+            inputId = paste0(prefix, "_probability_col"),
+            label = paste(family, "probability column:"),
+
+            choices = stats::setNames(
+              score_cols,
+              sub("^SIRIUS_", "", score_cols)
+            ),
+
+            selected = selected
+          ),
+
+          numericInput(
+            inputId = paste0(prefix, "_probability_min"),
+            label = "Keep probability greater than:",
+            value = 0.9,
+            min = 0,
+            max = 1,
+            step = 0.01
+          )
+        )
+
+      } else {
+
+        div(
+          class = "small-note",
+          paste(
+            "No SIRIUS", family, "probability columns found.",
+            "Rerun preprocessing after importing SIRIUS."
+          )
+        )
+      }
+    )
+  )
+}
+
+
+# Called only inside the corresponding class-filter block.
+apply_sirius_probability <- function(dd, prefix, family) {
+
+  if (!isTRUE(input[[paste0("use_", prefix, "_probability")]])) {
+    return(dd)
+  }
+
+  column <- input[[paste0(prefix, "_probability_col")]]
+
+  allowed <- names(dd)[
+    grepl(
+      paste0("^SIRIUS_", family, "#"),
+      names(dd),
+      ignore.case = TRUE
+    ) &
+      grepl("probability", names(dd), ignore.case = TRUE)
+  ]
+
+  validate(
+    need(
+      length(column) == 1L && column %in% allowed,
+      paste("Select a SIRIUS", family, "probability column.")
+    )
+  )
+
+  cutoff <- suppressWarnings(
+    as.numeric(input[[paste0(prefix, "_probability_min")]])
+  )
+
+  validate(
+    need(
+      length(cutoff) == 1L &&
+        is.finite(cutoff) &&
+        cutoff >= 0 &&
+        cutoff <= 1,
+      "Probability threshold must be between 0 and 1."
+    )
+  )
+
+  score <- suppressWarnings(
+    as.numeric(as.character(dd[[column]]))
+  )
+
+  keep <- is.finite(score) &
+    score >= 0 &
+    score <= 1 &
+    score > cutoff
+
+  dd[keep, , drop = FALSE]
+}
+  
   annotation_filter_choices <- reactive({
   req(procReady())
 
@@ -7896,75 +8988,6 @@ if (
       materialSwitch("sig_only", "Significant only", value = FALSE, status = "success"),
 
 tags$hr(),
-h4(class = "highlight", "Annotation filters"),
-
-materialSwitch(
-  "use_npc_filter",
-  "Filter by NPC class",
-  value = FALSE,
-  status = "success"
-),
-
-conditionalPanel(
-  condition = "input.use_npc_filter == true",
-  if (length(annotation_filter_choices()$npc) > 0) {
-    pickerInput(
-      inputId = "npc_filter_values",
-      label = "NPC class(es):",
-      choices = annotation_filter_choices()$npc,
-      selected = character(0),
-      multiple = TRUE,
-      options = list(
-  `actions-box` = TRUE,
-  `live-search` = TRUE,
-  `none-selected-text` = "Select NPC class(es)",
-  `style` = "btn-success",
-  `selected-text-format` = "count > 1",
-  `count-selected-text` = "{0} NPC class(es) selected"
-)
-    )
-  } else {
-    div(
-      class = "small-note",
-      "No NPC classes detected. Upload SIRIUS annotation and rerun preprocessing."
-    )
-  }
-),
-
-materialSwitch(
-  "use_classyfire_filter",
-  "Filter by ClassyFire class",
-  value = FALSE,
-  status = "success"
-),
-
-conditionalPanel(
-  condition = "input.use_classyfire_filter == true",
-  if (length(annotation_filter_choices()$classyfire) > 0) {
-    pickerInput(
-      inputId = "classyfire_filter_values",
-      label = "ClassyFire class(es):",
-      choices = annotation_filter_choices()$classyfire,
-      selected = character(0),
-      multiple = TRUE,
-      options = list(
-  `actions-box` = TRUE,
-  `live-search` = TRUE,
-  `none-selected-text` = "Select ClassyFire class(es)",
-  `style` = "btn-success",
-  `selected-text-format` = "count > 1",
-  `count-selected-text` = "{0} ClassyFire class(es) selected"
-)
-    )
-  } else {
-    div(
-      class = "small-note",
-      "No ClassyFire classes detected. Upload SIRIUS annotation and rerun preprocessing."
-    )
-  }
-),
-
-tags$hr(),
 
 pickerInput(
   inputId = "sel_feat",
@@ -7983,7 +9006,11 @@ pickerInput(
       radioButtons(
         "color_by",
         "Color points by:",
-        choices = c("Groups" = "Groups", "Mean" = "Mean"),
+        choices = c(
+  "Groups" = "Groups",
+  "Mean" = "Mean",
+  "Fold change" = "FC"
+),
         selected = "Groups",
         inline = TRUE
       ),
@@ -8019,19 +9046,203 @@ selectInput(
   selected = "Dark2"
 ),
 
-      uiOutput("volcano_sliders")
-    )
-  })
+numericInput(
+  "volcano_top_n",
+  "Number of top features to label:",
+  value = 0,
+  min = 0,
+  step = 1
+),
 
-  output$volcano_main <- renderUI({
-    if (!procReady()) return(NULL)
+uiOutput("volcano_label_column_ui"),
+
+uiOutput("volcano_sliders"),
+tags$hr(),
+h4(class = "highlight", "Annotation filters"),
+
+materialSwitch(
+  "use_npc_filter",
+  "Filter by NPC class",
+  value = FALSE,
+  status = "success"
+),
+
+conditionalPanel(
+  condition = "input.use_npc_filter == true",
+
+  if (length(annotation_filter_choices()$npc) > 0) {
+
     tagList(
-      withSpinner(plotlyOutput("volcano_plot", height = "520px"), type = 8, color = "#66CDAA"),
-      div(style = "height:8px;"),
-      uiOutput("selected_feature_panel")
+
+      pickerInput(
+        inputId = "npc_filter_values",
+        label = "NPC class(es):",
+        choices = annotation_filter_choices()$npc,
+        selected = character(0),
+        multiple = TRUE,
+
+        options = list(
+          `actions-box` = TRUE,
+          `live-search` = TRUE,
+          `none-selected-text` = "Select NPC class(es)",
+          `style` = "btn-success",
+          `selected-text-format` = "count > 1",
+          `count-selected-text` = "{0} NPC class(es) selected"
+        )
+      ),
+
+      sirius_probability_controls(
+        prefix = "npc",
+        family = "NPC",
+        annotation_column =
+          input$sirius_npcol %||% "NPC#class"
+      )
+    )
+
+  } else {
+
+    div(
+      class = "small-note",
+      "No NPC classes detected. Upload SIRIUS annotation and rerun preprocessing."
+    )
+  }
+),
+
+materialSwitch(
+  "use_classyfire_filter",
+  "Filter by ClassyFire class",
+  value = FALSE,
+  status = "success"
+),
+
+conditionalPanel(
+  condition = "input.use_classyfire_filter == true",
+
+  if (length(annotation_filter_choices()$classyfire) > 0) {
+
+    tagList(
+
+      pickerInput(
+        inputId = "classyfire_filter_values",
+        label = "ClassyFire class(es):",
+        choices = annotation_filter_choices()$classyfire,
+        selected = character(0),
+        multiple = TRUE,
+
+        options = list(
+          `actions-box` = TRUE,
+          `live-search` = TRUE,
+          `none-selected-text` = "Select ClassyFire class(es)",
+          `style` = "btn-success",
+          `selected-text-format` = "count > 1",
+          `count-selected-text` =
+            "{0} ClassyFire class(es) selected"
+        )
+      ),
+
+      sirius_probability_controls(
+        prefix = "classyfire",
+        family = "ClassyFire",
+        annotation_column =
+          input$sirius_cfcol %||% "ClassyFire#class"
+      )
+    )
+
+  } else {
+
+    div(
+      class = "small-note",
+      "No ClassyFire classes detected. Upload SIRIUS annotation and rerun preprocessing."
+    )
+  }
+),
+
+materialSwitch(
+  inputId = "use_gnps_annotated_filter",
+  label = "Filter by GNPS annotation",
+  value = FALSE,
+  status = "success"
+),
+
+materialSwitch(
+  inputId = "use_other_annotated_filter",
+  label = "Filter by Other annotation",
+  value = FALSE,
+  status = "success"
+),
+
+materialSwitch(
+  "use_component_filter",
+  "Filter by GNPS ComponentIndex",
+  value = FALSE,
+  status = "success"
+),
+
+conditionalPanel(
+  condition = "input.use_component_filter == true",
+
+  conditionalPanel(
+    condition = paste(
+      "input.use_main_gnps_pairs == true &&",
+      "input.file_main_gnps_pairs != null"
+    ),
+
+    pickerInput(
+      inputId = "volcano_components",
+      label = "ComponentIndex(es):",
+      choices = character(0),
+      selected = character(0),
+      multiple = TRUE,
+
+      options = list(
+        `actions-box` = TRUE,
+        `live-search` = TRUE,
+        `none-selected-text` = "Select ComponentIndex(es)",
+        `style` = "btn-success",
+        `selected-text-format` = "count > 1",
+        `count-selected-text` =
+          "{0} ComponentIndex(es) selected"
+      )
+    )
+  ),
+
+  conditionalPanel(
+    condition = paste(
+      "input.use_main_gnps_pairs != true ||",
+      "input.file_main_gnps_pairs == null"
+    ),
+
+    div(
+      class = "small-note",
+      paste(
+        "Enable the GNPS ComponentIndex source and upload",
+        "a GNPS pairs file in Load & Process."
+      )
+    )
+  )
+),
+
+tags$hr(),
+h4(class = "highlight", "Interactive heatmap"),
+materialSwitch(
+  inputId = "show_interactive_heatmap",
+  label = "Activate",
+  value = FALSE,
+  status = "success"
+)
     )
   })
 
+  output$volcano_ready <- renderText({
+  if (procReady()) "yes" else "no"
+})
+
+outputOptions(
+  output,
+  "volcano_ready",
+  suspendWhenHidden = FALSE
+)
+  
   output$volcano_sliders <- renderUI({
   req(procReady())
   dd <- rv$volcano
@@ -8121,11 +9332,372 @@ conditionalPanel(
     )
   })
 
+  # Optional GNPS network pairs.
+# Read the optional pairs file once.
+main_gnps_pairs_df <- reactive({
+  req(
+    isTRUE(input$use_main_gnps_pairs),
+    input$file_main_gnps_pairs
+  )
+
+  file <- input$file_main_gnps_pairs
+  ext <- tolower(tools::file_ext(file$name))
+
+  validate(
+    need(
+      ext %in% c("tsv", "txt", "csv"),
+      "Upload GNPS pairs as TSV, TXT, or CSV."
+    )
+  )
+
+  g <- data.table::fread(
+    file$datapath,
+    sep = if (ext == "csv") "," else "\t",
+    colClasses = "character",
+    data.table = FALSE,
+    check.names = FALSE
+  )
+
+  validate(
+    need(ncol(g) >= 3L, "The pairs file needs at least three columns."),
+    need(
+      !anyDuplicated(names(g)),
+      "The pairs file contains duplicate column names. Rename them first."
+    )
+  )
+
+  g
+})
+
+
+output$main_gnps_pairs_pickers <- renderUI({
+  g <- main_gnps_pairs_df()
+
+  # Select a standard name when present.
+  # Otherwise leave the selector visibly unselected.
+  default_column <- function(columns, candidates) {
+    positions <- match(
+      tolower(trimws(candidates)),
+      tolower(trimws(columns))
+    )
+
+    positions <- positions[!is.na(positions)]
+
+    if (length(positions)) columns[positions[1]] else ""
+  }
+
+  pairs_cols <- names(g)
+
+  pair_choices <- c(
+    "Select a column..." = "",
+    stats::setNames(pairs_cols, pairs_cols)
+  )
+
+  peak_ui <- if (is.null(input$file)) {
+    # raw_df() handles the actual peak-table input below.
+    NULL
+  } else {
+    NULL
+  }
+
+  # Allow pairs-column selection even before a peak table
+  # has been uploaded.
+  peak <- tryCatch(
+    raw_df(),
+    shiny.silent.error = function(e) NULL
+  )
+
+  if (is.null(peak)) {
+    peak_ui <- div(
+      class = "small-note",
+      "Upload a peak table to select its matching feature ID column."
+    )
+  } else {
+    peak_cols <- names(peak)
+
+    default_peak <- input$annotation_id_col
+
+    if (
+      length(default_peak) != 1L ||
+      !default_peak %in% peak_cols
+    ) {
+      default_peak <- default_column(
+        peak_cols,
+        c(
+          "row ID",
+          "alignment id",
+          "feature_id",
+          "feature id",
+          "id"
+        )
+      )
+    }
+
+    peak_ui <- selectInput(
+      inputId = "component_match_col",
+      label = "Peak-table feature ID column:",
+      choices = c(
+        "Select a column..." = "",
+        stats::setNames(peak_cols, peak_cols)
+      ),
+      selected = default_peak
+    )
+  }
+
+  tagList(
+    peak_ui,
+
+    selectInput(
+      inputId = "main_pairs_node1_col",
+      label = "Pairs: first node ID column:",
+      choices = pair_choices,
+      selected = default_column(pairs_cols, "CLUSTERID1")
+    ),
+
+    selectInput(
+      inputId = "main_pairs_node2_col",
+      label = "Pairs: second node ID column:",
+      choices = pair_choices,
+      selected = default_column(pairs_cols, "CLUSTERID2")
+    ),
+
+    selectInput(
+      inputId = "main_pairs_component_col",
+      label = "Pairs: ComponentIndex column:",
+      choices = pair_choices,
+      selected = default_column(pairs_cols, "ComponentIndex")
+    )
+  )
+})
+
+main_component_map <- reactive({
+  g <- main_gnps_pairs_df()
+
+  columns <- c(
+    input$main_pairs_node1_col,
+    input$main_pairs_node2_col,
+    input$main_pairs_component_col
+  )
+
+  validate(
+    need(
+      length(columns) == 3L &&
+        all(nzchar(columns)) &&
+        all(columns %in% names(g)),
+      "Select both node ID columns and the ComponentIndex column."
+    ),
+    need(
+      length(unique(columns)) == 3L,
+      "Choose three different columns for the two node IDs and ComponentIndex."
+    )
+  )
+
+  component <- trimws(as.character(g[[columns[3]]]))
+
+  dplyr::bind_rows(
+    tibble::tibble(
+      ClusterID = trimws(as.character(g[[columns[1]]])),
+      ComponentIndex = component
+    ),
+    tibble::tibble(
+      ClusterID = trimws(as.character(g[[columns[2]]])),
+      ComponentIndex = component
+    )
+  ) %>%
+    dplyr::filter(
+      !is.na(ClusterID),
+      nzchar(ClusterID),
+      !is.na(ComponentIndex),
+      nzchar(ComponentIndex)
+    ) %>%
+    dplyr::distinct(ClusterID, ComponentIndex)
+})
+
+
+# Map the original peak-table column to internal feature names.
+main_component_feature_ids <- reactive({
+  req(procReady(), rv$fmap)
+
+  peak <- raw_df()
+  column <- input$component_match_col
+
+  validate(
+    need(
+      length(column) == 1L &&
+        nzchar(column) &&
+        column %in% names(peak),
+      "Select the peak-table feature ID column in Load & Process."
+    ),
+    need(
+      nrow(peak) == nrow(rv$fmap),
+      "The peak table has changed. Run Process again."
+    )
+  )
+
+  tibble::tibble(
+    Feature = as.character(rv$fmap$Feature),
+    ClusterID = trimws(as.character(peak[[column]]))
+  ) %>%
+    dplyr::filter(
+      !is.na(ClusterID),
+      nzchar(ClusterID)
+    ) %>%
+    dplyr::distinct()
+})
+
+# Turning off the optional source also disables its filter.
+observeEvent(input$use_main_gnps_pairs, {
+
+  if (!isTRUE(input$use_main_gnps_pairs)) {
+
+    shinyWidgets::updateMaterialSwitch(
+  session,
+  inputId = "use_component_filter",
+  value = FALSE
+)
+  }
+
+}, ignoreInit = TRUE)
+  
+# Network annotations, independent of whether filtering is enabled.
+gnps_network_annotations <- reactive({
+
+  empty <- tibble::tibble(
+    Feature = character(),
+    GNPS_ClusterID = character(),
+    GNPS_ComponentIndex = character()
+  )
+
+  if (
+    !isTRUE(input$use_main_gnps_pairs) ||
+    is.null(input$file_main_gnps_pairs) ||
+    !isTRUE(procReady())
+  ) {
+    return(empty)
+  }
+
+  tryCatch({
+
+    ids <- main_component_feature_ids()
+    mapping <- main_component_map()
+
+    joined <- merge(
+      ids,
+      mapping,
+      by = "ClusterID",
+      all = FALSE,
+      sort = FALSE
+    )
+
+    collapse_ids <- function(x) {
+      x <- unique(as.character(x))
+      x <- x[!is.na(x) & nzchar(x)]
+
+      paste(
+        stringr::str_sort(x, numeric = TRUE),
+        collapse = ", "
+      )
+    }
+
+    joined %>%
+      dplyr::group_by(Feature) %>%
+      dplyr::summarise(
+        GNPS_ClusterID = collapse_ids(ClusterID),
+        GNPS_ComponentIndex = collapse_ids(ComponentIndex),
+        .groups = "drop"
+      )
+
+  }, shiny.silent.error = function(e) empty)
+})
+
+
+# Add columns without changing row order or duplicating features.
+add_gnps_network_annotations <- function(dd) {
+
+  annotations <- gnps_network_annotations()
+
+  index <- match(
+    as.character(dd$Feature),
+    annotations$Feature
+  )
+
+  dd$GNPS_ClusterID <- annotations$GNPS_ClusterID[index]
+  dd$GNPS_ComponentIndex <- annotations$GNPS_ComponentIndex[index]
+
+  dd
+}
+
   # ---- Filtered volcano data
-  filtered_volcano <- reactive({
+  filter_volcano_data <- function(exclude = character(), for_choices = FALSE) {
     req(procReady(), input$mz_range, input$rt_range, input$intensity_range)
   
     dd <- rv$volcano
+    
+    # Keep only features with a GNPS annotation.
+if (isTRUE(input$use_gnps_annotated_filter)) {
+
+  dd <- dd %>%
+    dplyr::filter(
+      !is.na(clean_missing_text(GNPS_annotation))
+    )
+}
+
+# Keep only features with an Other annotation.
+if (isTRUE(input$use_other_annotated_filter)) {
+
+  dd <- dd %>%
+    dplyr::filter(
+      !is.na(clean_missing_text(Other_annotation))
+    )
+}
+    
+if (
+  !"component" %in% exclude &&
+  isTRUE(input$use_main_gnps_pairs) &&
+  isTRUE(input$use_component_filter) &&
+  (!for_choices || length(input$volcano_components) > 0)
+) {
+
+  mapping <- main_component_map()
+
+validate(
+  need(
+    length(input$volcano_components) > 0,
+    "Select at least one ComponentIndex."
+  )
+)
+
+keep_ids <- unique(
+  mapping$ClusterID[
+    mapping$ComponentIndex %in%
+      as.character(input$volcano_components)
+  ]
+)
+
+feature_ids <- main_component_feature_ids()
+
+keep_features <- feature_ids$Feature[
+  feature_ids$ClusterID %in% keep_ids
+]
+
+dd <- dd[
+  as.character(dd$Feature) %in% keep_features,
+  ,
+  drop = FALSE
+]
+
+  if (!for_choices) {
+  validate(
+    need(
+      nrow(dd) > 0,
+      paste(
+        "No features match these components.",
+        "Check the selected ID column."
+      )
+    )
+  )
+}
+}
     pcut <- suppressWarnings(as.numeric(input$sig_p_cutoff %||% 0.05))
     if (!is.finite(pcut) || pcut < 0 || pcut > 1) pcut <- 0.05
     
@@ -8145,28 +9717,57 @@ conditionalPanel(
     )
 }
   
-    if (isTRUE(input$use_npc_filter)) {
+if (
+  !"npc" %in% exclude &&
+  isTRUE(input$use_npc_filter) &&
+  (!for_choices || length(input$npc_filter_values) > 0)
+) {
+
   validate(
     need(
-      !is.null(input$npc_filter_values) && length(input$npc_filter_values) > 0,
+      length(input$npc_filter_values) > 0,
       "NPC filter is enabled. Select at least one NPC class."
     )
   )
 
   dd <- dd %>%
-    dplyr::filter(`NPC#class` %in% input$npc_filter_values)
+    dplyr::filter(
+      `NPC#class` %in% input$npc_filter_values
+    )
+
+  # Applies only while the NPC class filter is active.
+  dd <- apply_sirius_probability(
+    dd,
+    prefix = "npc",
+    family = "NPC"
+  )
 }
 
-if (isTRUE(input$use_classyfire_filter)) {
+
+if (
+  !"classyfire" %in% exclude &&
+  isTRUE(input$use_classyfire_filter) &&
+  (!for_choices || length(input$classyfire_filter_values) > 0)
+) {
+
   validate(
     need(
-      !is.null(input$classyfire_filter_values) && length(input$classyfire_filter_values) > 0,
+      length(input$classyfire_filter_values) > 0,
       "ClassyFire filter is enabled. Select at least one ClassyFire class."
     )
   )
 
   dd <- dd %>%
-    dplyr::filter(`ClassyFire#class` %in% input$classyfire_filter_values)
+    dplyr::filter(
+      `ClassyFire#class` %in% input$classyfire_filter_values
+    )
+
+  # Applies only while the ClassyFire class filter is active.
+  dd <- apply_sirius_probability(
+    dd,
+    prefix = "classyfire",
+    family = "ClassyFire"
+  )
 }
     
     dd <- dd %>%
@@ -8197,13 +9798,1144 @@ if (isTRUE(input$use_classyfire_filter)) {
       }
     }
   
-    dd
+       dd
+  }
+
+  filtered_volcano <- reactive({
+    filter_volcano_data()
   })
 
+  # ------------------------------------------------------------
+# Dynamic annotation choices and unique-feature counts
+# ------------------------------------------------------------
+
+# Remember the last update to avoid repeatedly sending
+# identical choices back to the browser.
+volcano_picker_cache <- new.env(parent = emptyenv())
+
+
+update_counted_picker <- function(input_id, pairs) {
+
+  # pairs must contain Feature and Value.
+  pairs <- pairs %>%
+    dplyr::transmute(
+      Feature = as.character(Feature),
+      Value = as.character(Value)
+    ) %>%
+    dplyr::filter(
+      !is.na(Feature),
+      nzchar(Feature),
+      !is.na(Value),
+      nzchar(trimws(Value))
+    ) %>%
+    dplyr::distinct(Feature, Value)
+
+  counts <- pairs %>%
+    dplyr::count(Value, name = "n")
+
+  selected <- as.character(input[[input_id]])
+  selected <- unique(
+    selected[!is.na(selected) & nzchar(selected)]
+  )
+
+  # Keep selected values even when other filters remove
+  # all their matching features.
+  values <- stringr::str_sort(
+    unique(c(counts$Value, selected)),
+    numeric = TRUE
+  )
+
+  numbers <- counts$n[match(values, counts$Value)]
+  numbers[is.na(numbers)] <- 0L
+
+ # An empty annotation list is valid.
+# Explicitly clear the picker instead of creating a label.
+if (length(values) == 0L) {
+
+  choices <- character(0)
+
+} else {
+
+  labels <- paste0(
+    values,
+    " (",
+    numbers,
+    ifelse(numbers == 1L, " feature", " features"),
+    ifelse(
+      numbers == 0L & values %in% selected,
+      " — selected",
+      ""
+    ),
+    ")"
+  )
+
+  choices <- stats::setNames(values, labels)
+}
+
+  state <- list(
+    choices = choices,
+    selected = selected
+  )
+
+  previous <- volcano_picker_cache[[input_id]]
+
+  if (!identical(previous, state)) {
+    shinyWidgets::updatePickerInput(
+      session = session,
+      inputId = input_id,
+      choices = choices,
+      selected = selected
+    )
+
+    volcano_picker_cache[[input_id]] <- state
+  }
+}
+
+
+# Clear cached updates when processed data changes.
+observeEvent(rv$volcano, {
+  keys <- ls(
+    envir = volcano_picker_cache,
+    all.names = TRUE
+  )
+
+  if (length(keys)) {
+    rm(
+      list = keys,
+      envir = volcano_picker_cache
+    )
+  }
+}, priority = 100)
+
+
+# NPC: apply all filters except the NPC filter itself.
+observe({
+  req(procReady())
+
+  dd <- filter_volcano_data(
+    exclude = "npc",
+    for_choices = TRUE
+  )
+
+  req("NPC#class" %in% names(dd))
+
+  update_counted_picker(
+    input_id = "npc_filter_values",
+    pairs = tibble::tibble(
+      Feature = dd$Feature,
+      Value = dd[["NPC#class"]]
+    )
+  )
+})
+
+
+# ClassyFire: apply all filters except ClassyFire itself.
+observe({
+  req(procReady())
+
+  dd <- filter_volcano_data(
+    exclude = "classyfire",
+    for_choices = TRUE
+  )
+
+  req("ClassyFire#class" %in% names(dd))
+
+  update_counted_picker(
+    input_id = "classyfire_filter_values",
+    pairs = tibble::tibble(
+      Feature = dd$Feature,
+      Value = dd[["ClassyFire#class"]]
+    )
+  )
+})
+
+
+# ComponentIndex: apply all filters except ComponentIndex.
+observe({
+  req(
+    procReady(),
+    isTRUE(input$use_main_gnps_pairs),
+    input$file_main_gnps_pairs
+  )
+
+  dd <- filter_volcano_data(
+    exclude = "component",
+    for_choices = TRUE
+  )
+
+  feature_ids <- main_component_feature_ids() %>%
+  dplyr::filter(
+    Feature %in% as.character(dd$Feature)
+  )
+
+  mapping <- main_component_map() %>%
+    dplyr::transmute(
+      ClusterID = trimws(as.character(ClusterID)),
+      Value = as.character(ComponentIndex)
+    ) %>%
+    dplyr::distinct()
+
+  # Merge supports features belonging to multiple components.
+  pairs <- merge(
+    feature_ids,
+    mapping,
+    by = "ClusterID",
+    all = FALSE,
+    sort = FALSE
+  )
+
+  update_counted_picker(
+    input_id = "volcano_components",
+    pairs = pairs
+  )
+})
+  
+  output$volcano_feature_count <- renderText({
+  req(procReady())
+
+  dd <- filtered_volcano()
+
+  count_features <- function(x) {
+    x <- as.character(x)
+    length(unique(x[!is.na(x) & nzchar(x)]))
+  }
+
+  current <- count_features(dd$Feature)
+  total <- count_features(rv$volcano$Feature)
+
+  paste0(
+    "Features: ",
+    format(current, big.mark = ",", trim = TRUE),
+    " / ",
+    format(total, big.mark = ",", trim = TRUE),
+    " retained"
+  )
+})
+
+
+output$volcano_applied_filters <- renderUI({
+  req(procReady())
+
+  steps <- character()
+
+  add_step <- function(text) {
+    steps <<- c(steps, text)
+  }
+
+  fmt <- function(x) {
+    format(signif(as.numeric(x), 5), trim = TRUE)
+  }
+
+  show_values <- function(x) {
+    paste(as.character(x), collapse = ", ")
+  }
+
+  pcut <- suppressWarnings(
+    as.numeric(input$sig_p_cutoff %||% 0.05)
+  )
+  if (!is.finite(pcut) || pcut < 0 || pcut > 1) {
+    pcut <- 0.05
+  }
+
+  fcut <- suppressWarnings(
+    as.numeric(input$fc_thr %||% 1)
+  )
+  if (!is.finite(fcut) || fcut < 0) {
+    fcut <- 1
+  }
+
+  if (isTRUE(input$use_gnps_annotated_filter)) {
+    add_step("GNPS: retain features with a non-missing annotation.")
+  }
+
+  if (isTRUE(input$use_other_annotated_filter)) {
+    add_step("Other annotation: retain features with a non-missing annotation.")
+  }
+
+  if (
+    isTRUE(input$use_main_gnps_pairs) &&
+    isTRUE(input$use_component_filter)
+  ) {
+    add_step(paste0(
+      "GNPS ComponentIndex: ",
+      if (length(input$volcano_components)) {
+        show_values(input$volcano_components)
+      } else {
+        "selection required"
+      },
+      "; matching column: ",
+      input$component_match_col %||% "not selected",
+      "."
+    ))
+  }
+
+  if (length(input$sel_feat)) {
+    add_step(paste0(
+      "Manual feature selection: ",
+      show_values(input$sel_feat),
+      "."
+    ))
+  }
+
+  if (isTRUE(input$sig_only)) {
+    add_step(paste0(
+      "Significant features only: adjusted p-value ≤ ",
+      fmt(pcut),
+      " and |log2(FC)| ≥ ",
+      fmt(fcut),
+      "."
+    ))
+  }
+
+  for (prefix in c("npc", "classyfire")) {
+    if (!isTRUE(input[[paste0("use_", prefix, "_filter")]])) {
+      next
+    }
+
+    label <- if (prefix == "npc") "NPC" else "ClassyFire"
+    values <- input[[paste0(prefix, "_filter_values")]]
+
+    add_step(paste0(
+      label, " classes: ",
+      if (length(values)) show_values(values) else "selection required",
+      "."
+    ))
+
+    if (isTRUE(input[[paste0("use_", prefix, "_probability")]])) {
+      score_col <- input[[paste0(prefix, "_probability_col")]]
+      cutoff <- input[[paste0(prefix, "_probability_min")]]
+
+      add_step(paste0(
+        label, " SIRIUS probability: ",
+        sub("^SIRIUS_", "", score_col %||% "column not selected"),
+        " > ",
+        fmt(cutoff %||% 0.9),
+        "."
+      ))
+    }
+  }
+
+  # These ranges are always applied by filtered_volcano().
+  ranges <- list(
+    "m/z" = input$mz_range,
+    "Retention time" = input$rt_range,
+    "Intensity [log10(Mean + 1.1)]" = input$intensity_range
+  )
+
+  for (label in names(ranges)) {
+    limits <- ranges[[label]]
+
+    if (length(limits) == 2L) {
+      add_step(paste0(
+        label, ": ",
+        fmt(limits[1]), " to ", fmt(limits[2]),
+        " (inclusive)."
+      ))
+    }
+  }
+
+  add_step("Features require finite m/z, retention time and mean intensity.")
+
+  if (isTRUE(input$use_fdr_filter)) {
+    add_step(paste0(
+      "Adjusted p-value ≤ ", fmt(pcut), "."
+    ))
+  }
+
+  if (isTRUE(input$use_fc_filter)) {
+    direction <- input$fc_dir %||% "both"
+
+    rule <- switch(
+      direction,
+      both = paste0("|log2(FC)| ≥ ", fmt(fcut)),
+      up = paste0("log2(FC) ≥ ", fmt(fcut)),
+      paste0("log2(FC) ≤ ", fmt(-fcut))
+    )
+
+    add_step(paste0("Fold-change filter: ", rule, "."))
+  }
+
+  tags$ul(
+    style = paste(
+      "margin-top:10px;",
+      "padding-left:22px;",
+      "max-height:250px;",
+      "overflow-y:auto;"
+    ),
+    lapply(steps, function(step) tags$li(step))
+  )
+})
+  
+  # ============================================================
+# Interactive heatmap: current filtered feature count
+# ============================================================
+
+output$heatmap_has_data <- renderText({
+
+  if (!isTRUE(procReady())) {
+    return("no")
+  }
+
+  dd <- tryCatch(
+    filtered_volcano(),
+    shiny.silent.error = function(e) NULL
+  )
+
+  if (is.null(dd) || nrow(dd) == 0L) {
+    return("no")
+  }
+
+  "yes"
+})
+
+outputOptions(
+  output,
+  "heatmap_has_data",
+  suspendWhenHidden = FALSE
+)
+
+output$heatmap_filter_summary <- renderUI({
+
+  req(
+    procReady(),
+    filtered_volcano()
+  )
+
+  dd <- filtered_volcano()
+
+  features <- unique(
+    as.character(
+      dd$Feature
+    )
+  )
+
+  div(
+    class = "small-note",
+
+    HTML(
+      paste0(
+        "<b>",
+        format(
+          length(features),
+          big.mark = ","
+        ),
+        "</b> feature(s) retained by the current Volcano filters."
+      )
+    )
+  )
+})
+  
+# ============================================================
+# Heatmap data
+#
+# ROWS    = features/metabolites
+# COLUMNS = samples
+# LABEL   = sample annotation only
+# ============================================================
+
+heatmap_data <- reactive({
+
+  req(
+    procReady(),
+    rv$df_used,
+    rv$mat,
+    filtered_volcano()
+  )
+
+
+  # ----------------------------------------------------------
+  # Features surviving the current Volcano filters
+  # ----------------------------------------------------------
+
+  features <- unique(
+    as.character(
+      filtered_volcano()$Feature
+    )
+  )
+
+  features <- intersect(
+    features,
+    colnames(rv$df_used)
+  )
+
+
+  validate(
+    need(
+      length(features) > 0,
+      "No features remain after filtering."
+    )
+  )
+
+
+  # ----------------------------------------------------------
+  # Original matrix in Metabocano:
+  #
+  # samples x features
+  # ----------------------------------------------------------
+
+  mat <- as.matrix(
+    rv$df_used[
+      ,
+      features,
+      drop = FALSE
+    ]
+  )
+
+  storage.mode(mat) <- "double"
+
+
+  # Sample names
+  sample_names <- rownames(rv$mat)
+
+  if (
+    length(sample_names) ==
+      nrow(mat)
+  ) {
+    rownames(mat) <- sample_names
+  }
+
+
+  # ----------------------------------------------------------
+  # TRANSPOSE
+  #
+  # Now:
+  # rows    = features
+  # columns = samples
+  # ----------------------------------------------------------
+
+  mat <- t(mat)
+
+
+  # ----------------------------------------------------------
+  # Scaling
+  #
+  # Scale each FEATURE across samples.
+  #
+  # Because features are rows now, use:
+  #
+  # t(scale(t(mat), ...))
+  # ----------------------------------------------------------
+
+   scale_mode <- input$hm_scale %||% "uv"
+
+
+  if (identical(scale_mode, "uv")) {
+
+  row_sd <- apply(mat, 1L, stats::sd, na.rm = TRUE)
+
+  scalable <- is.finite(row_sd) & row_sd > 0
+
+  if (any(scalable)) {
+    mat[scalable, ] <- sweep(
+      mat[scalable, , drop = FALSE],
+      MARGIN = 1L,
+      STATS = row_sd[scalable],
+      FUN = "/"
+    )
+  }
+
+  # Constant rows cannot be scaled to unit variance.
+  mat[!scalable, ] <- 0
+
+} else if (identical(scale_mode, "zscore")) {
+
+    mat <- t(
+      scale(
+        t(mat),
+        center = TRUE,
+        scale = TRUE
+      )
+    )
+  }
+
+
+  # Protect against zero-variance features
+  mat[!is.finite(mat)] <- 0
+
+
+  # ----------------------------------------------------------
+  # Sample annotation
+  #
+  # Label is NOT heatmap data.
+  # It only colors the sample columns.
+  # ----------------------------------------------------------
+
+  annotation_col <- data.frame(
+
+    Group = factor(
+      as.character(
+        rv$df_used$Label
+      )
+    ),
+
+    stringsAsFactors = FALSE
+  )
+
+
+  rownames(annotation_col) <- colnames(mat)
+
+
+  list(
+    mat = mat,
+    annotation_col = annotation_col,
+    features = features
+  )
+})
+
+  # ============================================================
+# Generate interactive heatmap
+# ============================================================
+
+# ============================================================
+# Generate / update InteractiveComplexHeatmap
+# ============================================================
+
+observeEvent({
+
+  req(
+    procReady(),
+    isTRUE(input$show_interactive_heatmap)
+  )
+
+  list(
+    input$show_interactive_heatmap,
+    filtered_volcano(),
+    gnps_network_annotations(),
+    rv$df_used,
+    rv$mat,
+    input$hm_scale,
+    input$hm_distance,
+    input$hm_method,
+    input$hm_palette,
+    input$hm_group_palette,
+    input$hm_cluster_features,
+    input$hm_show_borders,
+    input$hm_cluster_samples,
+    input$hm_show_features,
+    input$hm_show_samples
+  )
+
+}, {
+
+  req(
+    isTRUE(input$show_interactive_heatmap),
+
+    input$hm_scale,
+    input$hm_distance,
+    input$hm_method,
+    input$hm_palette,
+    input$hm_group_palette
+  )
+
+
+  # ----------------------------------------------------------
+  # Prepared data
+  # ----------------------------------------------------------
+
+  hm <- heatmap_data()
+
+  mat <- hm$mat
+  annotation_col <- hm$annotation_col
+
+
+  req(
+    nrow(mat) > 0,
+    ncol(mat) > 0
+  )
+
+
+  # ----------------------------------------------------------
+  # Annotation colors
+  # ----------------------------------------------------------
+
+  groups <- unique(
+    as.character(
+      annotation_col$Group
+    )
+  )
+
+  groups <- groups[
+    !is.na(groups) &
+      nzchar(groups)
+  ]
+
+
+  group_cols <- make_palette(
+    input$hm_group_palette %||% "Dark2",
+    length(groups)
+  )
+
+  names(group_cols) <- groups
+
+
+  annotation_colors <- list(
+    Group = group_cols
+  )
+
+
+  # ----------------------------------------------------------
+  # Heatmap colors
+  # ----------------------------------------------------------
+
+  heatmap_colors <- switch(
+
+    input$hm_palette %||% "viridis",
+
+    "magma" =
+      viridisLite::magma(100),
+
+    "bwr" =
+      grDevices::colorRampPalette(
+        c(
+          "#2166AC",
+          "white",
+          "#B2182B"
+        )
+      )(100),
+
+    viridisLite::viridis(100)
+  )
+
+
+  # ----------------------------------------------------------
+  # Clustering
+  # ----------------------------------------------------------
+
+  cluster_features <-
+    isTRUE(input$hm_cluster_features) &&
+    nrow(mat) > 1
+
+
+  cluster_samples <-
+    isTRUE(input$hm_cluster_samples) &&
+    ncol(mat) > 1
+
+
+  distance <-
+    input$hm_distance %||%
+    "euclidean"
+
+
+  method <-
+    input$hm_method %||%
+    "ward.D2"
+
+
+  if (
+    identical(method, "ward.D2") &&
+    !identical(distance, "euclidean")
+  ) {
+    distance <- "euclidean"
+  }
+
+
+  # ----------------------------------------------------------
+  # Legend
+  # ----------------------------------------------------------
+
+  heatmap_title <- switch(
+
+    input$hm_scale %||% "uv",
+
+    "zscore" = "Z-score",
+
+    "none" = "Intensity",
+
+    "Scaled intensity"
+  )
+
+
+  # ----------------------------------------------------------
+  # Construct heatmap
+  #
+  # ROWS    = features
+  # COLUMNS = samples
+  # ----------------------------------------------------------
+
+  ht <- ComplexHeatmap::pheatmap(
+
+    mat,
+
+    color = heatmap_colors,
+
+
+    # sample groups
+    annotation_col = annotation_col,
+
+    annotation_colors =
+      annotation_colors,
+
+    annotation_names_col =
+      TRUE,
+
+
+    # rows = features
+    cluster_rows =
+      cluster_features,
+
+    # columns = samples
+    cluster_cols =
+      cluster_samples,
+
+
+    show_rownames =
+      isTRUE(input$hm_show_features),
+
+    show_colnames =
+      isTRUE(input$hm_show_samples),
+
+
+    border_color = if (isTRUE(input$hm_show_borders)) "grey60" else NA,
+
+
+    clustering_distance_rows =
+      distance,
+
+    clustering_distance_cols =
+      distance,
+
+    clustering_method =
+      method,
+
+
+    name =
+      heatmap_title
+  )
+
+
+  # ----------------------------------------------------------
+  # Connect to the PERMANENT heatmap UI
+  # ----------------------------------------------------------
+
+  ht <- local({
+
+  grDevices::pdf(
+    file = NULL,
+    width = 10,
+    height = 8
+  )
+
+  on.exit(
+    grDevices::dev.off(),
+    add = TRUE
+  )
+
+  ComplexHeatmap::draw(ht)
+})
+  
+  # Capture data belonging to this heatmap.
+# Click indices refer to the original matrix, before clustering.
+heatmap_feature_data <- as.data.frame(
+  add_gnps_network_annotations(rv$volcano),
+  check.names = FALSE,
+  stringsAsFactors = FALSE
+)
+
+heatmap_intensities <- rv$df_used
+
+output$heatmap_feature_info <- shiny::renderUI({
+  div(
+    class = "small-note",
+    "Click a heatmap cell to see feature and sample information."
+  )
+})
+
+
+# Format values without interpreting annotation text as HTML.
+format_heatmap_info <- function(x) {
+  if (!length(x)) return("NA")
+
+  if (is.numeric(x)) {
+    return(paste(
+      ifelse(
+        is.na(x),
+        "NA",
+        format(signif(x, 6), trim = TRUE)
+      ),
+      collapse = ", "
+    ))
+  }
+
+  x <- as.character(x)
+  x[is.na(x) | !nzchar(trimws(x))] <- "NA"
+
+  paste(x, collapse = ", ")
+}
+
+
+# Two-column table used for annotations and statistics.
+heatmap_info_table <- function(row, columns) {
+  columns <- intersect(columns, names(row))
+
+  tags$table(
+    class = "table table-condensed table-striped",
+    style = "width:100%;",
+
+    tags$tbody(
+      lapply(columns, function(column) {
+        label <- sub(
+          "^(Peak_|SIRIUS_|GNPS_|Other_)",
+          "",
+          column
+        )
+
+        if (column == "GNPS_ClusterID") {
+          label <- "GNPS ClusterID"
+        }
+        
+        if (column == "GNPS_ComponentIndex") {
+          label <- "GNPS ComponentIndex"
+        }
+        
+        if (column == "GNPS_annotation") {
+          label <- "GNPS annotation"
+        }
+
+        if (column == "Other_annotation") {
+          label <- "Other annotation"
+        }
+
+        tags$tr(
+          tags$th(
+            style = "vertical-align:top;white-space:normal;",
+            label
+          ),
+          tags$td(
+            style = "overflow-wrap:anywhere;white-space:normal;",
+            format_heatmap_info(row[[column]])
+          )
+        )
+      })
+    )
+  )
+}
+
+
+heatmap_click_action <- function(df, output) {
+
+  if (is.null(df) || nrow(df) == 0L) {
+    output$heatmap_feature_info <- shiny::renderUI({
+      div(
+        class = "small-note",
+        "Click inside the heatmap body."
+      )
+    })
+    return(invisible(NULL))
+  }
+
+  row_index <- as.integer(
+    unlist(df$row_index, use.names = FALSE)
+  )
+
+  column_index <- as.integer(
+    unlist(df$column_index, use.names = FALSE)
+  )
+
+  if (!length(row_index) || !length(column_index)) {
+    return(invisible(NULL))
+  }
+
+  i <- row_index[1]
+  j <- column_index[1]
+
+  if (
+    is.na(i) || is.na(j) ||
+    i < 1L || i > nrow(mat) ||
+    j < 1L || j > ncol(mat)
+  ) {
+    return(invisible(NULL))
+  }
+
+  feature <- rownames(mat)[i]
+  sample <- colnames(mat)[j]
+
+  feature_rows <- heatmap_feature_data[
+    as.character(heatmap_feature_data$Feature) == feature,
+    ,
+    drop = FALSE
+  ]
+
+  # Comparison-dependent columns are displayed separately.
+  stats_columns <- c(
+    "Groups",
+    "Group_num",
+    "Group_den",
+    "FC",
+    "Adj.p-value",
+    "Adj.p-value.log",
+    "Mean",
+    "mean_num",
+    "mean_den",
+    "TestScale",
+    "Significant_default"
+  )
+
+  annotation_columns <- setdiff(
+    names(feature_rows),
+    stats_columns
+  )
+
+  processed_intensity <- if (
+    feature %in% names(heatmap_intensities) &&
+    j <= nrow(heatmap_intensities)
+  ) {
+    heatmap_intensities[[feature]][j]
+  } else {
+    NA_real_
+  }
+
+  output$heatmap_feature_info <- shiny::renderUI({
+
+    div(
+      style = paste(
+        "max-height:500px;",
+        "overflow-y:auto;",
+        "overflow-wrap:anywhere;",
+        "padding:8px;"
+      ),
+
+      tags$h4("Selected heatmap cell"),
+
+      tags$p(
+        tags$strong("Feature: "),
+        feature
+      ),
+
+      tags$p(
+        tags$strong("Sample: "),
+        sample
+      ),
+
+      tags$p(
+        tags$strong("Sample group: "),
+        as.character(annotation_col$Group[j])
+      ),
+
+      tags$p(
+        tags$strong("Processed intensity before heatmap scaling: "),
+        format_heatmap_info(processed_intensity)
+      ),
+
+      tags$p(
+        tags$strong("Displayed heatmap value: "),
+        format_heatmap_info(mat[i, j])
+      ),
+
+      if (!nrow(feature_rows)) {
+        div(
+          class = "small-note",
+          "No feature annotations matched this heatmap row."
+        )
+      } else {
+        tagList(
+
+          tags$details(
+            tags$summary(
+              style = "cursor:pointer;color:#228B22;font-weight:600;",
+              "All feature information"
+            ),
+
+            heatmap_info_table(
+              feature_rows[1, , drop = FALSE],
+              annotation_columns
+            )
+          ),
+
+          tags$details(
+            style = "margin-top:12px;",
+
+            tags$summary(
+              style = "cursor:pointer;color:#228B22;font-weight:600;",
+              "All processed comparisons"
+            ),
+
+            lapply(seq_len(nrow(feature_rows)), function(k) {
+              current <- feature_rows[k, , drop = FALSE]
+
+              tagList(
+                tags$h5(
+                  tags$strong(
+                    as.character(current$Groups[1])
+                  )
+                ),
+
+                heatmap_info_table(
+                  current,
+                  setdiff(stats_columns, "Groups")
+                )
+              )
+            })
+          )
+        )
+      }
+    )
+  })
+}
+
+
+# Keep brushing useful with the custom information panel.
+heatmap_brush_action <- function(df, output) {
+
+  output$heatmap_feature_info <- shiny::renderUI({
+
+    if (is.null(df) || nrow(df) == 0L) {
+      return(
+        div(class = "small-note", "No heatmap cells selected.")
+      )
+    }
+
+    rows <- unique(
+      as.integer(unlist(df$row_index, use.names = FALSE))
+    )
+
+    columns <- unique(
+      as.integer(unlist(df$column_index, use.names = FALSE))
+    )
+
+    rows <- rows[
+      !is.na(rows) & rows >= 1L & rows <= nrow(mat)
+    ]
+
+    columns <- columns[
+      !is.na(columns) & columns >= 1L & columns <= ncol(mat)
+    ]
+
+    tagList(
+      tags$p(
+        tags$strong("Selected region: "),
+        paste0(
+          length(rows), " features × ",
+          length(columns), " samples."
+        )
+      ),
+
+      tags$p(
+        class = "small-note",
+        "Click a cell in either heatmap to inspect its feature information."
+      )
+    )
+  })
+}
+
+
+InteractiveComplexHeatmap::makeInteractiveComplexHeatmap(
+  input = input,
+  output = output,
+  session = session,
+
+  ht_list = ht,
+  heatmap_id = "metabocano_heatmap",
+
+  click_action = heatmap_click_action,
+  brush_action = heatmap_brush_action
+)
+
+}, ignoreInit = FALSE)
+  
   # ---- Volcano plot
   output$volcano_plot <- renderPlotly({
     req(filtered_volcano())
-    dd <- filtered_volcano()
+    dd <- add_gnps_network_annotations(filtered_volcano())
     validate(need(nrow(dd) > 0, "No points left after filtering."))
 
     dd$key <- paste(dd$Groups, dd$Feature, sep = "__")
@@ -8238,6 +10970,8 @@ if (isTRUE(input$use_classyfire_filter)) {
       "<br>NPC: ", dd$`NPC#class`,
       "<br>ClassyFire: ", dd$`ClassyFire#class`,
       "<br>GNPS annotation: ", dd$GNPS_annotation,
+      "<br>GNPS ClusterID: ", htmltools::htmlEscape(ifelse(is.na(dd$GNPS_ClusterID), "NA", dd$GNPS_ClusterID)),
+      "<br>GNPS ComponentIndex: ", htmltools::htmlEscape(ifelse(is.na(dd$GNPS_ComponentIndex),"NA", dd$GNPS_ComponentIndex)),
       "<br>Other annotation: ", dd$Other_annotation
     )
 
@@ -8245,7 +10979,7 @@ if (isTRUE(input$use_classyfire_filter)) {
     if (!is.finite(fc_line) || fc_line < 0) fc_line <- 1
     
     p_thr <- suppressWarnings(as.numeric(input$sig_p_cutoff %||% 0.05))
-    if (!is.finite(p_thr) || p_thr <= 0 || p_thr > 1) p_thr <- 0.05
+    if (!is.finite(p_thr) || p_thr < 0 || p_thr > 1) p_thr <- 0.05
     
     ythr <- -log10(pmax(p_thr, .Machine$double.xmin))
     
@@ -8291,7 +11025,66 @@ if (!use_mean_y) {
   )
 }
 
-    if (input$color_by == "Groups") {
+  p <- if (identical(input$color_by, "FC")) {
+
+  # FC contains log2 fold changes.
+  # A colored point must pass BOTH thresholds.
+  dd$FC_status <- "Other"
+
+  passes_p <- is.finite(dd$`Adj.p-value`) &
+    dd$`Adj.p-value` <= p_thr
+
+  up <- passes_p &
+    is.finite(dd$FC) &
+    dd$FC >= fc_line &
+    dd$FC > 0
+
+  down <- passes_p &
+    is.finite(dd$FC) &
+    dd$FC <= -fc_line &
+    dd$FC < 0
+
+  dd$FC_status[which(up)] <- "Upregulated"
+  dd$FC_status[which(down)] <- "Downregulated"
+
+  dd$FC_status <- factor(
+    dd$FC_status,
+    levels = c("Other", "Downregulated", "Upregulated")
+  )
+
+  plot_ly(
+    data = dd,
+    x = ~FC,
+    y = ~plot_y,
+    color = ~FC_status,
+    colors = c(
+      "Other" = "grey70",
+      "Downregulated" = "blue",
+      "Upregulated" = "red"
+    ),
+    type = "scatter",
+    mode = "markers",
+    text = hover_txt,
+    hoverinfo = "text",
+    key = ~key,
+    marker = list(
+      size = 12,
+      opacity = 0.85,
+      line = list(color = "black", width = 1)
+    ),
+    source = "volcano"
+  ) %>%
+    layout(
+      shapes = shapes,
+      xaxis = list(title = "log2(FC)"),
+      yaxis = list(title = y_title),
+      legend = list(
+        title = list(text = "Regulation")
+      )
+    ) %>%
+    event_register("plotly_click")
+
+} else if (input$color_by == "Groups") {
       plot_ly(
         data = dd,
         x = ~FC, y = ~plot_y,
@@ -8329,6 +11122,17 @@ if (!use_mean_y) {
           legend = list(title = list(text = "Comparison"))
         ) %>% event_register("plotly_click")
     }
+  
+  add_volcano_top_labels(
+  p = p,
+  dd = dd,
+  n = input$volcano_top_n %||% 0,
+  width_px =
+    session$clientData$output_volcano_plot_width %||% 800,
+  height_px = 520,
+  label_col = input$volcano_label_column %||% "Feature"
+)
+  
   })
 
   # ---- Feature plot on click
@@ -8412,156 +11216,98 @@ if (!use_mean_y) {
     "NA"
   }
 
-  peak_detail_map <- make_prefixed_colmap(
+  # Include network IDs in the existing annotation details.
+row <- add_gnps_network_annotations(row)
 
-  if (isTRUE(input$use_peak_extra_cols)) {
-    input$peak_extra_cols %||% character(0)
-  } else {
-    character(0)
-  },
+detail_cols <- names(row)
 
-  prefix = "Peak_"
+# Readable labels for standard columns.
+friendly_labels <- c(
+  "Feature" = "Feature name",
+  "id" = "Original feature ID",
+  "mz" = "m/z",
+  "RT" = "Retention time",
+  "Groups" = "Comparison",
+  "Group_num" = "Numerator group",
+  "Group_den" = "Denominator group",
+  "FC" = "log2 fold change",
+  "Adj.p-value" = "Adjusted p-value (FDR)",
+  "Adj.p-value.log" = "-log10(FDR)",
+  "Mean" = "Mean intensity",
+  "mean_num" = "Mean intensity: numerator",
+  "mean_den" = "Mean intensity: denominator",
+  "TestScale" = "Statistical test scale",
+  "Significant_default" = "Significant at default thresholds",
+  "NPC#class" = "NPC class",
+  "ClassyFire#class" = "ClassyFire class",
+  "GNPS_annotation" = "GNPS annotation",
+  "GNPS_ClusterID" = "GNPS ClusterID",
+  "GNPS_ComponentIndex" = "GNPS ComponentIndex",
+  "Other_annotation" = "Other annotation"
 )
 
-sirius_detail_map <- make_prefixed_colmap(
+additional_details_ui <- tags$details(
 
-  if (
-    isTRUE(input$use_sirius) &&
-    isTRUE(input$use_sirius_extra_cols)
-  ) {
-    input$sirius_extra_cols %||% character(0)
-  } else {
-    character(0)
-  },
+  style = "
+    margin-top: 14px;
+    border-top: 1px solid #dddddd;
+    padding-top: 10px;
+  ",
 
-  prefix = "SIRIUS_"
-)
-
-gnps_detail_map <- make_prefixed_colmap(
-
-  if (
-    isTRUE(input$use_gnps_annotation) &&
-    isTRUE(input$use_gnps_extra_cols)
-  ) {
-    input$gnps_extra_cols %||% character(0)
-  } else {
-    character(0)
-  },
-
-  prefix = "GNPS_"
-)
-
-other_detail_map <- make_prefixed_colmap(
-
-  if (
-    isTRUE(input$use_other_annotation) &&
-    isTRUE(input$use_other_extra_cols)
-  ) {
-    input$other_extra_cols %||%
-      character(0)
-  } else {
-    character(0)
-  },
-
-  prefix = "Other_"
-)
-
-detail_labels <- c(
-
-  stats::setNames(
-    paste0(
-      "Peak table: ",
-      names(peak_detail_map)
-    ),
-    unname(peak_detail_map)
+  tags$summary(
+    style = "
+      cursor: pointer;
+      font-weight: bold;
+      color: #2c3e50;
+      padding: 6px 0;
+    ",
+    "Click to expand"
   ),
 
-  stats::setNames(
-    paste0(
-      "SIRIUS: ",
-      names(sirius_detail_map)
-    ),
-    unname(sirius_detail_map)
-  ),
+  div(
+    style = "
+      margin-top: 8px;
+      max-height: 450px;
+      overflow-y: auto;
+    ",
 
-  stats::setNames(
-    paste0(
-      "GNPS: ",
-      names(gnps_detail_map)
-    ),
-    unname(gnps_detail_map)
-  ),
+    lapply(detail_cols, function(column_name) {
 
-  if (isTRUE(input$use_other_annotation)) {
-    c(
-      "Other annotation" = "Other_annotation"
-    )
-  } else {
-    character(0)
-  },
-
-  stats::setNames(
-    paste0(
-      "Other: ",
-      names(other_detail_map)
-    ),
-    unname(other_detail_map)
-  )
-)
-
-detail_cols <- intersect(
-  names(detail_labels),
-  names(row)
-)
-
-additional_details_ui <- NULL
-
-if (length(detail_cols)) {
-
-  additional_details_ui <- div(
-
-    tags$hr(),
-
-    tags$h5(
-      style = "
-        font-weight: bold;
-        color: #2c3e50;
-        margin-bottom: 10px;
-      ",
-      "Additional information"
-    ),
-
-    lapply(
-      detail_cols,
-      function(column_name) {
-
-        div(
-          style = "
-            display: grid;
-            grid-template-columns: minmax(180px, 35%) 1fr;
-            gap: 10px;
-            padding: 5px 0;
-            border-bottom: 1px solid #eeeeee;
-            overflow-wrap: anywhere;
-          ",
-
-          tags$strong(
-            paste0(
-              detail_labels[[column_name]],
-              ":"
-            )
-          ),
-
-          tags$span(
-            format_extra_value(
-              row[[column_name]]
-            )
-          )
+      display_name <- if (
+        column_name %in% names(friendly_labels)
+      ) {
+        unname(friendly_labels[[column_name]])
+      } else {
+        # Keep additional annotation column names recognizable.
+        sub(
+          "^(Peak|SIRIUS|GNPS|Other)_",
+          "\\1: ",
+          column_name
         )
       }
-    )
+
+      div(
+        style = "
+          display: grid;
+          grid-template-columns: minmax(160px, 35%) minmax(0, 1fr);
+          gap: 10px;
+          padding: 6px 0;
+          border-bottom: 1px solid #eeeeee;
+          overflow-wrap: anywhere;
+        ",
+
+        tags$strong(
+          paste0(display_name, ":")
+        ),
+
+        tags$span(
+          style = "white-space: pre-wrap; user-select: text;",
+          format_extra_value(row[[column_name]])
+        )
+      )
+    })
   )
-}
+)
   
   tagList(
     div(
@@ -8715,6 +11461,69 @@ if (length(detail_cols)) {
 
     out <- annotation_export_table()
 
+    if (
+  isTRUE(input$use_main_gnps_pairs) &&
+  !is.null(input$file_main_gnps_pairs)
+) {
+
+  peak <- raw_df()
+  id_col <- input$component_match_col
+
+  validate(
+    need(
+      length(id_col) == 1L &&
+        nzchar(id_col) &&
+        id_col %in% names(peak),
+      "Select the peak-table feature ID column for GNPS pairs."
+    ),
+    need(
+      nrow(out) == nrow(peak),
+      "Annotation export rows do not match the peak table."
+    )
+  )
+
+  ids <- tibble::tibble(
+    export_row = seq_len(nrow(peak)),
+    ClusterID = trimws(as.character(peak[[id_col]]))
+  ) %>%
+    dplyr::filter(
+      !is.na(ClusterID),
+      nzchar(ClusterID)
+    )
+
+  joined <- merge(
+    ids,
+    main_component_map(),
+    by = "ClusterID",
+    all = FALSE,
+    sort = FALSE
+  )
+
+  collapse_ids <- function(x) {
+    x <- unique(as.character(x))
+    x <- x[!is.na(x) & nzchar(x)]
+
+    paste(
+      stringr::str_sort(x, numeric = TRUE),
+      collapse = ", "
+    )
+  }
+
+  network <- joined %>%
+    dplyr::group_by(export_row) %>%
+    dplyr::summarise(
+      GNPS_ClusterID = collapse_ids(ClusterID),
+      GNPS_ComponentIndex = collapse_ids(ComponentIndex),
+      .groups = "drop"
+    )
+
+  index <- match(seq_len(nrow(out)), network$export_row)
+
+  out$GNPS_ClusterID <- network$GNPS_ClusterID[index]
+  out$GNPS_ComponentIndex <-
+    network$GNPS_ComponentIndex[index]
+}
+    
     data.table::fwrite(
       out,
       file,
@@ -8739,12 +11548,157 @@ if (length(detail_cols)) {
   content = function(file) {
     req(rv$volcano)
 
-    out <- volcano_to_wide_if_needed(rv$volcano)
+    out <- volcano_to_wide_if_needed(
+  add_gnps_network_annotations(rv$volcano)
+)
 
     data.table::fwrite(out, file, na = "")
   }
 )
 
+ output$dl_filtered_feature_table <- downloadHandler(
+
+  filename = function() {
+    original_name <- input$file_data$name %||% "dataset.csv"
+
+    paste0(
+      tools::file_path_sans_ext(basename(original_name)),
+      "_metabocano.csv"
+    )
+  },
+
+  content = function(file) {
+    req(procReady(), rv$fmap)
+
+    original <- as.data.frame(
+      raw_df(),
+      check.names = FALSE,
+      stringsAsFactors = FALSE
+    )
+
+    validate(
+      need(
+        nrow(original) == nrow(rv$fmap),
+        "The feature table has changed. Run Process again before downloading."
+      )
+    )
+
+    retained_features <- unique(
+      as.character(filtered_volcano()$Feature)
+    )
+
+    # The feature map follows the original peak-table row order.
+    keep <- as.character(rv$fmap$Feature) %in%
+      retained_features
+
+    if (identical(input$software_tool, "msdial")) {
+
+  # Read the original file without treating any row as a header.
+  source_file <- input$file_data$datapath
+
+  field_counts <- utils::count.fields(
+    source_file,
+    sep = ",",
+    quote = "\"",
+    comment.char = ""
+  )
+
+  max_cols <- max(field_counts, na.rm = TRUE)
+
+  validate(
+    need(
+      is.finite(max_cols) && max_cols > 0,
+      "Could not determine the MS-DIAL table structure."
+    )
+  )
+
+  full_table <- utils::read.csv(
+    source_file,
+    header = FALSE,
+    col.names = paste0("V", seq_len(max_cols)),
+    colClasses = "character",
+    stringsAsFactors = FALSE,
+    check.names = FALSE,
+    na.strings = character(0),
+    comment.char = "",
+    fill = TRUE
+  )
+
+  # Locate the same header used by read_msdial_robust().
+  header_row <- NA_integer_
+
+  for (i in seq_len(min(50L, nrow(full_table)))) {
+    row_text <- tolower(
+      as.character(unlist(full_table[i, ], use.names = FALSE))
+    )
+
+    row_text <- gsub("[^a-z0-9]", "", row_text)
+
+    if (
+      "averagemz" %in% row_text ||
+      "alignmentid" %in% row_text
+    ) {
+      header_row <- i
+      break
+    }
+  }
+
+  validate(
+    need(
+      !is.na(header_row),
+      "Could not locate the MS-DIAL feature header."
+    )
+  )
+
+  validate(
+    need(
+      nrow(full_table) - header_row == length(keep),
+      paste(
+        "MS-DIAL rows do not match the processed feature map.",
+        "Run Process again before downloading."
+      )
+    )
+  )
+
+  # Preserve ALL introductory rows and the original header.
+  # Filter only the feature rows below that header.
+  rows_to_export <- c(
+    seq_len(header_row),
+    header_row + which(keep)
+  )
+
+  out <- full_table[
+    rows_to_export,
+    ,
+    drop = FALSE
+  ]
+
+  data.table::fwrite(
+    out,
+    file,
+    col.names = FALSE,
+    row.names = FALSE,
+    na = "",
+    quote = "auto"
+  )
+
+} else {
+
+  out <- original[
+    keep,
+    ,
+    drop = FALSE
+  ]
+
+  data.table::fwrite(
+    out,
+    file,
+    na = ""
+  )
+}
+  }
+)
+ 
 output$dl_matrix <- downloadHandler(
   filename = function() {
     paste0(dataset_name(), "_MetaboAnalyst_table.csv")
@@ -8790,9 +11744,9 @@ output$dl_autoplotter_zip <- downloadHandler(
     )
 
     autoplotter_name_map <- make_autoplotter_name_map(
-      fmap = rv$fmap,
-      volcano = rv$volcano
-    )
+  fmap = rv$fmap,
+  volcano = add_gnps_network_annotations(rv$volcano)
+)
 
     data.table::fwrite(autoplotter_data, data_file, na = "")
     data.table::fwrite(autoplotter_metadata, meta_file, na = "")
