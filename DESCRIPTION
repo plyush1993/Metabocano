@@ -30,7 +30,9 @@ Imports:
     igraph,
     RColorBrewer,
     zip,
-    ggrepel
+    ggrepel,
+    ComplexHeatmap,
+    InteractiveComplexHeatmap
 Remotes: 
     bioc::limma,
     bioc::ComplexHeatmap,
