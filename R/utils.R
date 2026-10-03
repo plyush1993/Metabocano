@@ -1007,9 +1007,39 @@ compute_stats_long <- function(df_used,
   out_list <- vector("list", nrow(comb))
 
   for (i in seq_len(nrow(comb))) {
-    gnum <- comb[i, 1] # Reference (Denominator)
-    gden <- comb[i, 2] # Comparison (Numerator)
+    gnum <- comb[i, 1] # Numerator
+    gden <- comb[i, 2] # Denominator
     comp <- paste0(gnum, " / ", gden)
+
+    if (
+  isTRUE(paired) &&
+  test %in% c("Student", "Wilcoxon")
+) {
+
+  n_num <- sum(as.character(gr) == gnum, na.rm = TRUE)
+  n_den <- sum(as.character(gr) == gden, na.rm = TRUE)
+
+  minimum_pairs <- if (test == "Student") 2L else 1L
+
+  validate(
+    need(
+      n_num == n_den,
+      paste0(
+        "Paired test: ", comp,
+        " has unequal group sizes (",
+        n_num, " and ", n_den, ")."
+      )
+    ),
+    need(
+      min(n_num, n_den) >= minimum_pairs,
+      paste0(
+        "Paired test: ", comp,
+        " needs at least ", minimum_pairs,
+        " sample pair(s)."
+      )
+    )
+  )
+}
 
     sub <- df_used[df_used$Label %in% c(gden, gnum), c("Label", feats), drop = FALSE]
     sub$Label <- factor(as.character(sub$Label), levels = c(gden, gnum))
@@ -1354,37 +1384,648 @@ make_autoplotter_metadata <- function(df_used, sample_names) {
 }
 
 make_autoplotter_name_map <- function(fmap, volcano = NULL) {
-  fmap <- as.data.frame(fmap, check.names = FALSE, stringsAsFactors = FALSE)
 
+  fmap <- as.data.frame(
+    fmap,
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+
+  # Keep names and ordering consistent with the AutoPlotter data.
   out <- tibble::tibble(
     Name = as.character(fmap$Feature)
   )
 
-  if (!is.null(volcano) && all(c("Feature", "NPC#class", "ClassyFire#class") %in% names(volcano))) {
-    ann <- volcano %>%
-      dplyr::select(
-        Feature,
-        `NPC#class`,
-        `ClassyFire#class`
-      ) %>%
-      dplyr::distinct(Feature, .keep_all = TRUE) %>%
-      dplyr::mutate(
-        `NPC#class` = clean_missing_text(
-        `NPC#class`
-      ),
+  if (
+    is.null(volcano) ||
+    !"Feature" %in% names(volcano) ||
+    nrow(volcano) == 0
+  ) {
+    return(out)
+  }
 
-      `ClassyFire#class` = clean_missing_text(
-        `ClassyFire#class`
+  volcano <- as.data.frame(
+    volcano,
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+
+  # Exclude comparison-specific statistics.
+  # Keep all feature metadata and annotation columns.
+  statistical_cols <- c(
+    "Groups",
+    "Group_num",
+    "Group_den",
+    "Adj.p-value",
+    "Mean",
+    "mean_num",
+    "mean_den",
+    "FC",
+    "TestScale",
+    "Adj.p-value.log",
+    "Significant_default"
+  )
+
+  annotation_cols <- setdiff(
+    names(volcano),
+    c("Feature", statistical_cols)
+  )
+
+  ann <- volcano %>%
+    dplyr::select(
+      Feature,
+      dplyr::all_of(annotation_cols)
+    ) %>%
+    dplyr::mutate(
+      Feature = as.character(Feature),
+      dplyr::across(
+        dplyr::where(
+          function(x) is.character(x) || is.factor(x)
+        ),
+        clean_missing_text
       )
-      )
+    ) %>%
+    # Annotations repeat across comparisons:
+    # retain one row per feature.
+    dplyr::distinct(
+      Feature,
+      .keep_all = TRUE
+    )
 
-    out <- out %>%
-      dplyr::left_join(ann, by = c("Name" = "Feature"))
-
-} else {
-  out$`NPC#class` <- NA_character_
-  out$`ClassyFire#class` <- NA_character_
+  out %>%
+    dplyr::left_join(
+      ann,
+      by = c("Name" = "Feature")
+    )
 }
 
-  out
+volcano_main_ui <- function() {
+
+  tagList(
+
+        div(
+      style = paste(
+        "background:rgba(255,255,255,0.95);",
+        "border:1px solid #ddd;",
+        "border-radius:8px;",
+        "padding:12px 16px;",
+        "margin-bottom:15px;"
+      ),
+
+      div(
+        style = "font-size:17px;font-weight:600;",
+        textOutput("volcano_feature_count", inline = TRUE)
+      ),
+
+      tags$details(
+  style = "margin-top:8px;",
+
+  tags$summary(
+    style = "cursor:pointer;color:#228B22;",
+    "Applied filters"
+  ),
+
+  uiOutput("volcano_applied_filters"),
+
+  tags$details(
+    style = "margin-top:12px;",
+
+    tags$summary(
+      style = "cursor:pointer;color:#228B22;",
+      "Download filtered peak table"
+    ),
+
+    div(
+      style = "margin-top:10px;",
+
+      p(
+        class = "small-note",
+        paste(
+          "Export the original peak table with only",
+          "features retained by the current filters."
+        )
+      ),
+
+      downloadButton(
+        outputId = "dl_filtered_feature_table",
+        label = "Download filtered CSV",
+        class = "btn-success"
+      )
+    )
+  )
+)
+    ),
+
+    # ========================================================
+    # VOLCANO VIEW
+    # ========================================================
+
+    conditionalPanel(
+      condition = "!input.show_interactive_heatmap",
+
+      withSpinner(
+        plotlyOutput(
+          "volcano_plot",
+          height = "520px"
+        ),
+        type = 8,
+        color = "#66CDAA"
+      ),
+
+      div(
+        style = "height:8px;"
+      ),
+
+      uiOutput(
+        "selected_feature_panel"
+      )
+    ),
+
+
+    # ========================================================
+    # INTERACTIVE HEATMAP VIEW
+    # ========================================================
+
+    conditionalPanel(
+      condition = "input.show_interactive_heatmap",
+
+      div(
+
+        style = "
+          background: rgba(255,255,255,0.90);
+          border: 1px solid #ddd;
+          border-radius: 8px;
+          padding: 12px;
+          margin-bottom: 15px;
+        ",
+
+        h4(
+          class = "highlight",
+          "Interactive heatmap"
+        ),
+
+        uiOutput(
+          "heatmap_filter_summary"
+        ),
+
+
+        # ----------------------------------------------------
+        # Heatmap-specific settings
+        # ----------------------------------------------------
+
+        fluidRow(
+
+          column(
+            width = 4,
+
+            selectInput(
+              "hm_scale",
+              "Scaling:",
+              choices = c(
+                "Unit variance, no centering" = "uv",
+                "Z-score" = "zscore",
+                "None" = "none"
+              ),
+              selected = "uv"
+            )
+          ),
+
+          column(
+            width = 4,
+
+            selectInput(
+              "hm_distance",
+              "Clustering distance:",
+              choices = c(
+                "Euclidean" = "euclidean",
+                "Manhattan" = "manhattan",
+                "Correlation" = "correlation"
+              ),
+              selected = "euclidean"
+            )
+          ),
+
+          column(
+            width = 4,
+
+            selectInput(
+              "hm_method",
+              "Clustering method:",
+              choices = c(
+                "Ward.D2" = "ward.D2",
+                "Complete" = "complete",
+                "Average" = "average"
+              ),
+              selected = "ward.D2"
+            )
+          )
+        ),
+
+
+        fluidRow(
+
+          column(
+            width = 3,
+
+            checkboxInput(
+              "hm_cluster_samples",
+              "Cluster samples",
+              value = TRUE
+            )
+          ),
+
+          column(
+            width = 3,
+
+            checkboxInput(
+              "hm_cluster_features",
+              "Cluster features",
+              value = TRUE
+            )
+          ),
+
+          column(
+            width = 3,
+
+            checkboxInput(
+              "hm_show_samples",
+              "Show sample names",
+              value = FALSE
+            )
+          ),
+
+          column(
+            width = 3,
+
+            checkboxInput(
+              "hm_show_features",
+              "Show feature names",
+              value = FALSE
+            ),
+
+            checkboxInput(
+                "hm_show_borders",
+                "Show cell borders",
+                value = TRUE
+              )
+          )
+        ),
+
+
+        fluidRow(
+
+          column(
+            width = 4,
+
+            selectInput(
+              "hm_palette",
+              "Heatmap palette:",
+              choices = c(
+                "Viridis" = "viridis",
+                "Magma" = "magma",
+                "Blue - White - Red" = "bwr"
+              ),
+              selected = "bwr"
+            )
+          ),
+
+          column(
+            width = 4,
+
+            selectInput(
+              "hm_group_palette",
+              "Group annotation palette:",
+              choices = palette_choices,
+              selected = "Dark2"
+            )
+          )
+        )
+      ),
+
+
+  tagList(
+  conditionalPanel(
+    condition = "output.heatmap_has_data === 'yes'",
+
+    InteractiveComplexHeatmap::InteractiveComplexHeatmapOutput(
+      heatmap_id = "metabocano_heatmap",
+      layout = "1-(2|3)",
+      width1 = 700,
+      height1 = 550,
+      width2 = 350,
+      height2 = 300,
+      action = "click",
+      cursor = TRUE,
+      output_ui = shiny::uiOutput("heatmap_feature_info")
+    )
+  ),
+
+  conditionalPanel(
+    condition = "output.heatmap_has_data !== 'yes'",
+
+    div(
+      class = "small-note",
+      paste(
+        "No heatmap is available for the current selection.",
+        "Check the filters and preprocessing status."
+      )
+    )
+  )
+)
+    )
+  )
+}
+
+add_volcano_top_labels <- function(
+    p, dd, n = 0L, width_px = 800, height_px = 520,
+    label_col = "Feature"
+) {
+
+  n <- suppressWarnings(as.integer(n))
+  if (length(n) != 1L || is.na(n) || n <= 0L) {
+    return(p)
+  }
+
+  # Keep valid plotted coordinates.
+  d <- as.data.frame(dd, stringsAsFactors = FALSE)
+
+  d <- d[
+    is.finite(d$FC) & is.finite(d$plot_y),
+    ,
+    drop = FALSE
+  ]
+
+  if (!nrow(d)) return(p)
+
+  # Rank only valid FDR values.
+  d$.score <- NA_real_
+
+  valid <- is.finite(d$`Adj.p-value`) &
+    d$`Adj.p-value` >= 0 &
+    d$`Adj.p-value` <= 1
+
+  d$.score[valid] <-
+    -log10(
+      pmax(d$`Adj.p-value`[valid], .Machine$double.xmin)
+    ) * abs(d$FC[valid])
+
+  ranked <- which(is.finite(d$.score))
+
+  ranked <- ranked[
+    order(
+      -d$.score[ranked],
+      as.character(d$Feature[ranked]),
+      ranked
+    )
+  ]
+
+  # One label per feature.
+  # With multiple comparisons, use its highest-scoring point.
+  ranked <- ranked[
+    !duplicated(as.character(d$Feature[ranked]))
+  ]
+
+  selected <- head(ranked, n)
+
+  if (!length(selected)) return(p)
+
+  # Put labeled points first so ggrepel's label numbering
+  # corresponds to these rows.
+  d <- d[
+    c(selected, setdiff(seq_len(nrow(d)), selected)),
+    ,
+    drop = FALSE
+  ]
+
+  n_labels <- length(selected)
+
+  # Read the selected label column.
+if (
+  length(label_col) != 1L ||
+  is.na(label_col) ||
+  !label_col %in% names(d)
+) {
+  label_col <- "Feature"
+}
+
+label_values <- clean_missing_text(
+  as.character(d[[label_col]])
+)
+
+# Missing annotations fall back to the Feature name.
+missing_label <- is.na(label_values) |
+  !nzchar(trimws(label_values))
+
+label_values[missing_label] <-
+  as.character(d$Feature[missing_label])
+
+d$.label <- ""
+d$.label[seq_len(n_labels)] <-
+  label_values[seq_len(n_labels)]
+
+  padded_range <- function(x) {
+    r <- range(x, finite = TRUE)
+    span <- diff(r)
+
+    if (span == 0) {
+      span <- max(abs(r), 1)
+    }
+
+    r + c(-1, 1) * span * 0.08
+  }
+
+  xr <- padded_range(d$FC)
+  yr <- padded_range(d$plot_y)
+
+  # Off-screen plot used only to calculate label positions.
+  label_plot <- ggplot2::ggplot(
+    d,
+    ggplot2::aes(
+      x = FC,
+      y = plot_y,
+      label = .label
+    )
+  ) +
+    ggrepel::geom_text_repel(
+      size = 3.2,
+      family = "sans",
+      seed = 123,
+      max.overlaps = Inf,
+      max.time = 1,
+      max.iter = 10000,
+      box.padding = 0.5,
+      point.padding = 0.3,
+      point.size = 3,
+      min.segment.length = 0
+    ) +
+    ggplot2::coord_cartesian(
+      xlim = xr,
+      ylim = yr,
+      expand = FALSE
+    ) +
+    ggplot2::theme_void() +
+    ggplot2::theme(
+      plot.margin = grid::unit(rep(0, 4), "pt")
+    )
+
+  grDevices::pdf(
+    file = NULL,
+    width = max(300, width_px - 160) / 96,
+    height = max(250, height_px - 120) / 96
+  )
+
+  on.exit(grDevices::dev.off(), add = TRUE)
+
+  grid::grid.newpage()
+  grid::grid.draw(ggplot2::ggplotGrob(label_plot))
+  grid::grid.force()
+
+  # Enter the panel viewport to interpret ggrepel coordinates.
+  tree <- grid::grid.ls(
+    viewports = TRUE,
+    print = FALSE
+  )
+
+  panel_vp <- tree$name[
+    tree$type == "vpListing" &
+      grepl("^panel([.-]|$)", tree$name)
+  ]
+
+  if (!length(panel_vp)) {
+    stop("Could not locate the ggrepel panel viewport.")
+  }
+
+  grid::seekViewport(panel_vp[[1]])
+
+  annotations <- lapply(seq_len(n_labels), function(i) {
+
+    label_grob <- grid::grid.get(
+      paste0("textrepelgrob", i),
+      grep = FALSE,
+      global = TRUE
+    )
+
+    if (is.null(label_grob)) {
+      stop("Could not retrieve a ggrepel label position.")
+    }
+
+    nx <- grid::convertX(
+      label_grob$x, "npc", valueOnly = TRUE
+    )
+
+    ny <- grid::convertY(
+      label_grob$y, "npc", valueOnly = TRUE
+    )
+
+    list(
+      # Connector points to the original feature.
+      x = d$FC[i],
+      y = d$plot_y[i],
+      xref = "x",
+      yref = "y",
+
+      # Repelled label position.
+      ax = xr[1] + nx * diff(xr),
+      ay = yr[1] + ny * diff(yr),
+      axref = "x",
+      ayref = "y",
+
+      text = as.character(
+        htmltools::htmlEscape(d$.label[i])
+      ),
+      showarrow = TRUE,
+      arrowhead = 0,
+      arrowwidth = 0.8,
+      arrowcolor = "grey50",
+      xanchor = "center",
+      yanchor = "middle",
+      font = list(
+        size = 12,
+        color = "black",
+        family = "Arial"
+      ),
+      captureevents = FALSE
+    )
+  })
+
+  plotly::layout(
+    p,
+    annotations = annotations,
+    xaxis = list(range = xr),
+    yaxis = list(range = yr)
+  )
+}
+
+annotation_panel <- function(
+    switch_id, label, tooltip_id, tooltip_text, ...
+) {
+  div(
+    style = paste(
+      "background:rgba(255,255,255,0.95);",
+      "border:1px solid #d9e2dc;",
+      "border-left:4px solid #5cb85c;",
+      "border-radius:8px;",
+      "padding:14px;",
+      "margin-bottom:12px;"
+    ),
+
+    div(
+      style = paste(
+        "display:flex;",
+        "align-items:flex-start;",
+        "justify-content:space-between;",
+        "gap:8px;"
+      ),
+
+      shinyWidgets::materialSwitch(
+        inputId = switch_id,
+        label = label,
+        value = FALSE,
+        status = "success",
+        width = "auto"
+      ),
+
+      actionButton(
+        inputId = tooltip_id,
+        label = "?",
+        class = "btn-xs",
+        style = "font-weight:bold;flex-shrink:0;"
+      )
+    ),
+
+    shinyBS::bsTooltip(
+      id = tooltip_id,
+      title = tooltip_text,
+      placement = "right",
+      trigger = "click",
+      options = list(container = "body")
+    ),
+
+    conditionalPanel(
+      condition = paste0("input.", switch_id, " == true"),
+
+      tags$details(
+        open = NA,
+
+        tags$summary(
+          style = paste(
+            "cursor:pointer;",
+            "color:#27823b;",
+            "font-weight:600;",
+            "padding:6px 0;"
+          ),
+          "Upload and column settings"
+        ),
+
+        div(
+          style = paste(
+            "border-top:1px solid #e5e5e5;",
+            "padding-top:12px;",
+            "margin-top:6px;"
+          ),
+          ...
+        )
+      )
+    )
+  )
 }

@@ -17,9 +17,64 @@
 #' @import RColorBrewer
 #' @import zip
 #' @import igraph
+#' @import ComplexHeatmap
+#' @import InteractiveComplexHeatmap
+#' @import ggrepel
 app_ui <- function() {
 fluidPage(
   useShinyjs(),
+
+  tags$head(
+  tags$script(HTML("
+    (function () {
+
+      function fixFileInputs() {
+        document.querySelectorAll('input[type=file]').forEach(
+          function (input) {
+
+            const button = input.closest('.btn-file');
+
+            if (!button) return;
+
+            // Keep the hidden input inside its Browse button.
+            button.style.setProperty(
+              'position', 'relative', 'important'
+            );
+
+            input.style.setProperty(
+              'position', 'absolute', 'important'
+            );
+            input.style.setProperty(
+              'top', '0', 'important'
+            );
+            input.style.setProperty(
+              'left', '0', 'important'
+            );
+            input.style.setProperty(
+              'width', '1px', 'important'
+            );
+            input.style.setProperty(
+              'height', '1px', 'important'
+            );
+            input.style.setProperty(
+              'opacity', '0', 'important'
+            );
+            input.style.setProperty(
+              'pointer-events', 'none', 'important'
+            );
+          }
+        );
+      }
+
+      // Inputs present when the page first loads.
+      $(fixFileInputs);
+
+      // Inputs subsequently created by renderUI().
+      $(document).on('shiny:bound', fixFileInputs);
+
+    })();
+  "))
+),
 
 tags$head(tags$style(HTML("
   .app-footer { position: fixed; left:0; right:0; bottom:0;
@@ -174,11 +229,41 @@ tags$head(tags$style(HTML("
   }
 "))),
 
-div(
-  class = "app-footer",
-  HTML('Created by: Ivan Plyushchenko &nbsp;|&nbsp;
-       <a href="https://github.com/plyush1993/Metabocano" target="_blank">GitHub repository</a>')
-),
+div(class = "app-footer", HTML('
+    <span class="footer-text">by Plyushchenko I.V.</span>
+    <span class="footer-sep">&nbsp;|&nbsp;</span>
+    <span class="footer-text">GPLv3</span>
+    <span class="footer-sep">&nbsp;|&nbsp;</span>
+     <a id="latest-release-link"
+     class="footer-link"
+     href="https://github.com/plyush1993/metabocano/releases/latest"
+     target="_blank">v. </a>
+
+    <script>
+    fetch("https://api.github.com/repos/plyush1993/metabocano/releases/latest")
+      .then(function(response) {
+        if (!response.ok) throw new Error("GitHub release request failed");
+        return response.json();
+      })
+      .then(function(data) {
+        var link = document.getElementById("latest-release-link");
+        if (link && data.tag_name) {
+          link.textContent = "v. " + data.tag_name;
+          if (data.html_url) {
+            link.href = data.html_url;
+          }
+        }
+      })
+      .catch(function(error) {
+        var link = document.getElementById("latest-release-link");
+        if (link) {
+          link.textContent = "Latest release";
+          link.href = "https://github.com/plyush1993/metabocano/releases/latest";
+        }
+      });
+  </script>
+
+  ')),
 
   div(
   style = "
@@ -439,83 +524,33 @@ conditionalPanel(
 checkboxInput("show_labels_table", "Show labels table", TRUE),
 
           h3(class = "highlight", "Join with Annotation"),
-      div(
-  style = "
-    display: flex;
-    align-items: center;
-    margin-bottom: 10px;
-  ",
 
-  materialSwitch(
-    inputId = "use_peak_extra_cols",
-    label = "Join with other peak table column",
-    value = FALSE,
-    status = "success",
-    width = "auto"
-  ),
+annotation_panel(
+  switch_id = "use_peak_extra_cols",
+  label = "Additional peak-table columns",
+  tooltip_id = "btnAD",
 
-  actionButton(
-          inputId = "btnAD",
-          label = "?",
-          class = "btn-xs",
-          style = "font-weight: bold; margin-left: 10px; margin-top: -20px;"
-        )
-),
-
-bsTooltip(
-        id = "btnAD",
-        title = paste0(
+  tooltip_text = paste0(
     "Selected columns will be added to the downloaded volcano table ",
-      "and displayed after clicking a volcano point."
+    "and displayed after clicking a volcano point."
   ),
-        placement = "right",
-        trigger = "click",
-        options = list(container = "body")
-      ),
 
-conditionalPanel(
-  condition = "input.use_peak_extra_cols == true",
-
-  uiOutput(
-    "peak_extra_cols_ui"
-  )
+  uiOutput("peak_extra_cols_ui")
 ),
 
-      div(
-        style = "display: flex; align-items: center; margin-bottom: 15px;",
+annotation_panel(
+  switch_id = "use_sirius",
+  label = "SIRIUS / CANOPUS annotation",
+  tooltip_id = "btn5",
 
-        materialSwitch(
-          inputId = "use_sirius",
-          label = "Join SIRIUS summary",
-          value = FALSE,
-          status = "success",
-          width = "auto"
-        ),
-
-        actionButton(
-          inputId = "btn5",
-          label = "?",
-          class = "btn-xs",
-          style = "font-weight: bold; margin-left: 10px; margin-top: -20px;"
-        )
-      ),
-      bsTooltip(
-        id = "btn5",
-        title = paste0(
-    "<b>Join SIRIUS annotations summary with the processed table.</b><br>",
-    "The selected peak-table <em>Feature ID</em> column is matched ",
+  tooltip_text = paste0(
+    "<b>Join SIRIUS annotations with the processed table.</b><br>",
+    "The selected peak-table Feature ID column is matched ",
     "to the selected SIRIUS mapping ID column.<br>",
-    "Default SIRIUS mapping ID: <em>mappingFeatureId</em><br>",
-    "Default NPC column: <em>NPS#class</em><br>",
+    "Default mapping ID: <em>mappingFeatureId</em><br>",
+    "Default NPC column: <em>NPC#class</em><br>",
     "Default ClassyFire column: <em>ClassyFire#class</em>"
   ),
-        placement = "right",
-        trigger = "click",
-        options = list(container = "body")
-      ),
-
-      conditionalPanel(
-  condition = "input.use_sirius",
 
   fileInput(
     "file_sirius",
@@ -526,45 +561,18 @@ conditionalPanel(
   uiOutput("sirius_pickers")
 ),
 
-div(
-  style = "display: flex; align-items: center; margin-bottom: 15px;",
+annotation_panel(
+  switch_id = "use_gnps_annotation",
+  label = "GNPS library annotation",
+  tooltip_id = "btn_gnps_annotation",
 
-  materialSwitch(
-    inputId = "use_gnps_annotation",
-    label = "Join GNPS annotation",
-    value = FALSE,
-    status = "success",
-    width = "auto"
-  ),
-
-  actionButton(
-    inputId = "btn_gnps_annotation",
-    label = "?",
-    class = "btn-xs",
-    style = "
-      font-weight: bold;
-      margin-left: 10px;
-      margin-top: -20px;
-    "
-  )
-),
-
-bsTooltip(
-  id = "btn_gnps_annotation",
-  title = paste0(
+  tooltip_text = paste0(
     "<b>Join GNPS library annotations with the processed table.</b><br>",
-    "The selected peak-table <em>Feature ID</em> column is matched ",
+    "The selected peak-table Feature ID column is matched ",
     "to the selected GNPS ID column.<br>",
     "Default GNPS ID: <em>#Scan#</em><br>",
     "Default annotation: <em>Compound_Name</em>"
   ),
-  placement = "right",
-  trigger = "click",
-  options = list(container = "body")
-),
-
-conditionalPanel(
-  condition = "input.use_gnps_annotation",
 
   fileInput(
     "file_gnps_annotation",
@@ -575,45 +583,41 @@ conditionalPanel(
   uiOutput("gnps_annotation_pickers")
 ),
 
-div(
-  style = "display: flex; align-items: center; margin-bottom: 15px;",
+annotation_panel(
+  switch_id = "use_main_gnps_pairs",
+  label = "GNPS network / ComponentIndex",
+  tooltip_id = "btn_main_gnps_pairs",
 
-  materialSwitch(
-    inputId = "use_other_annotation",
-    label = "Join Other Annotation Source",
-    value = FALSE,
-    status = "success",
-    width = "auto"
+  tooltip_text = paste0(
+    "<b>Enable filtering by GNPS network component.</b><br>",
+    "Select the peak-table matching ID column, both pairs-file ",
+    "node ID columns, and the component column.<br>",
+    "Default pairs columns: <em>CLUSTERID1</em>, ",
+    "<em>CLUSTERID2</em>, and <em>ComponentIndex</em>.<br>",
+    "Both endpoints are assigned to their component."
   ),
 
-  actionButton(
-    inputId = "btn_other_annotation",
-    label = "?",
-    class = "btn-xs",
-    style = "
-      font-weight: bold;
-      margin-left: 10px;
-      margin-top: -20px;
-    "
-  )
+  fileInput(
+    "file_main_gnps_pairs",
+    "Upload GNPS network pairs (.tsv/.txt/.csv)",
+    accept = c(".tsv", ".txt", ".csv")
+  ),
+
+  uiOutput("main_gnps_pairs_pickers")
 ),
 
-bsTooltip(
-  id = "btn_other_annotation",
-  title = paste0(
-    "<b>Join annotations from any external table.</b><br>",
+annotation_panel(
+  switch_id = "use_other_annotation",
+  label = "Other annotation source",
+  tooltip_id = "btn_other_annotation",
+
+  tooltip_text = paste0(
+    "<b>Join annotations from an external table.</b><br>",
     "Choose a peak-table ID column and the corresponding ",
     "ID column in the annotation file.<br>",
-    "By default, the peak-table <em>Feature ID</em> column is used when available.<br>",
-    "Choose one primary annotation column and optionally add additional columns."
+    "Choose one primary annotation column and optionally ",
+    "add additional columns."
   ),
-  placement = "right",
-  trigger = "click",
-  options = list(container = "body")
-),
-
-conditionalPanel(
-  condition = "input.use_other_annotation",
 
   fileInput(
     "file_other_annotation",
@@ -626,7 +630,7 @@ conditionalPanel(
 
           tags$hr(),
           h3(class = "highlight", "Imputation by Noise"),
-          radioButtons("do_mvi", "Imputation:", c("No"="no", "Yes"="yes"), selected = "yes", inline = TRUE),
+          radioButtons("do_mvi", "Imputation:", c("No"="no", "Yes"="yes"), selected = "no", inline = TRUE),
           conditionalPanel(
             condition = "input.do_mvi == 'yes'",
             conditionalPanel(
@@ -655,7 +659,31 @@ conditionalPanel(
           selectInput("p_adjust", "p-adjust:", c("BH","holm","hochberg","hommel","bonferroni","BY","fdr","none"), selected = "BH"),
           conditionalPanel(
             condition = "input.test_type == 'Student' || input.test_type == 'Wilcoxon'",
-            checkboxInput("paired", "Paired test", FALSE)
+            checkboxInput(
+  "paired",
+  "Paired test — samples paired by order",
+  FALSE
+),
+
+conditionalPanel(
+  condition = "input.paired == true",
+
+  helpText(
+    paste(
+      "Samples are paired by their order within each group.",
+      "Check every pair below before running preprocessing.",
+      "Sample names are not used to identify matching subjects."
+    )
+  ),
+
+  tags$details(
+    tags$summary("Show sample pairs"),
+    div(
+      style = "overflow-x: auto;",
+      tableOutput("paired_sample_preview")
+    )
+  )
+)
           ),
           conditionalPanel(
             condition = "input.test_type == 'Student'",
@@ -736,14 +764,30 @@ conditionalPanel(
     tabPanel("2) Volcano explorer", value = "volcano",
       sidebarLayout(
         sidebarPanel(uiOutput("volcano_sidebar")),
-        mainPanel(uiOutput("volcano_main"))
+        mainPanel(
+  conditionalPanel(
+    condition = "output.volcano_ready === 'yes'",
+    volcano_main_ui()
+  )
+)
       )
     ),
 
-tabPanel("App) SIRIUS & GNPS stats", value = "sirius_gnps",
-  sidebarLayout(
-    sidebarPanel(uiOutput("sirius_gnps_sidebar")),
-    mainPanel(uiOutput("sirius_gnps_main"))
+navbarMenu(
+  title = "3) Other Utils",
+
+  tabPanel(
+    title = "SIRIUS & GNPS merging",
+    value = "sirius_gnps",
+
+    sidebarLayout(
+      sidebarPanel(
+        uiOutput("sirius_gnps_sidebar")
+      ),
+      mainPanel(
+        uiOutput("sirius_gnps_main")
+      )
+    )
   )
 )
 
