@@ -3983,68 +3983,147 @@ if (!"Statistical_results" %in% names(node_data)) {
 }
 
 
-# Load feature annotations independently of the statistics switch.
-annotation_cols <- c(
-  "GNPS_annotation",
-  "Other_annotation"
-)
+# Read first-page annotations without requiring preprocessing.
+node_data$GNPS_annotation <- NA_character_
+node_data$Other_annotation <- NA_character_
+node_data$Feature_annotation_hover <- ""
 
-if (
-  !is.null(rv$volcano) &&
-  is.data.frame(rv$volcano) &&
-  nrow(rv$volcano) > 0 &&
-  "id" %in% names(rv$volcano)
-) {
+if (!is.null(input$file_data)) {
+
   annotations <- as.data.frame(
-    rv$volcano,
-    check.names = FALSE
+    annotation_export_table(),
+    check.names = FALSE,
+    stringsAsFactors = FALSE
   )
 
-  for (column in annotation_cols) {
-    if (!column %in% names(annotations)) {
-      annotations[[column]] <- NA_character_
+  peak <- raw_df()
+
+  # Use the explicit network matching column when that
+  # source is enabled; otherwise use Annotation Feature ID.
+  match_col <- if (
+    isTRUE(input$use_main_gnps_pairs) &&
+    !is.null(input$file_main_gnps_pairs)
+  ) {
+    input$component_match_col
+  } else {
+    input$annotation_id_col
+  }
+
+  validate(
+    need(
+      length(match_col) == 1L &&
+        nzchar(match_col) &&
+        match_col %in% names(peak),
+      paste(
+        "Select the peak-table ID column matching",
+        "the network node IDs on the first page."
+      )
+    ),
+    need(
+      nrow(annotations) == nrow(peak),
+      "Annotation-table rows do not match the peak table."
+    )
+  )
+
+  node_ids <- trimws(
+    as.character(peak[[match_col]])
+  )
+
+  collapse_values <- function(x) {
+
+    values <- clean_missing_text(as.character(x))
+    values <- unique(values[!is.na(values)])
+
+    if (length(values)) {
+      paste(values, collapse = " | ")
+    } else {
+      NA_character_
     }
   }
 
-  annotations_by_node <- annotations %>%
-    dplyr::mutate(
-      ClusterID = trimws(as.character(id))
-    ) %>%
-    dplyr::filter(
-      !is.na(ClusterID),
-      nzchar(ClusterID)
-    ) %>%
-    dplyr::group_by(ClusterID) %>%
-    dplyr::summarise(
-      dplyr::across(
-        dplyr::all_of(annotation_cols),
-        ~ {
-          values <- clean_missing_text(.x)
-          values <- unique(values[!is.na(values)])
+  # Also include ComponentIndex from the first-page pairs file.
+  # The supplementary network's own ComponentIndex remains
+  # displayed separately in its existing hover information.
+  if (
+    isTRUE(input$use_main_gnps_pairs) &&
+    !is.null(input$file_main_gnps_pairs)
+  ) {
 
-          if (length(values)) {
-            paste(values, collapse = " | ")
-          } else {
-            NA_character_
-          }
-        }
-      ),
-      .groups = "drop"
+    mapping <- main_component_map()
+
+    components_by_id <- split(
+      as.character(mapping$ComponentIndex),
+      as.character(mapping$ClusterID)
     )
 
-  node_data <- dplyr::left_join(
-    node_data,
-    annotations_by_node,
-    by = "ClusterID"
-  )
-}
+    annotations[["Main-page GNPS ComponentIndex"]] <- vapply(
+      node_ids,
+      function(id) {
+        if (is.na(id) || !nzchar(id)) {
+          return(NA_character_)
+        }
 
-for (column in annotation_cols) {
-  if (!column %in% names(node_data)) {
-    node_data[[column]] <- NA_character_
+        collapse_values(components_by_id[[id]])
+      },
+      character(1)
+    )
+  }
+
+  # These two annotations already have dedicated hover lines.
+  extra_columns <- setdiff(
+    names(annotations),
+    c("GNPS_annotation", "Other_annotation")
+  )
+
+  for (i in seq_len(nrow(node_data))) {
+
+    matched_rows <- which(
+      !is.na(node_ids) &
+        node_ids == as.character(node_data$ClusterID[i])
+    )
+
+    if (!length(matched_rows)) {
+      next
+    }
+
+    # Populate the existing GNPS/Other hover and click fields.
+    for (column in c("GNPS_annotation", "Other_annotation")) {
+
+      if (column %in% names(annotations)) {
+        node_data[[column]][i] <- collapse_values(
+          annotations[[column]][matched_rows]
+        )
+      }
+    }
+
+    values <- vapply(
+      extra_columns,
+      function(column) {
+        collapse_values(
+          annotations[[column]][matched_rows]
+        )
+      },
+      character(1)
+    )
+
+    present <- !is.na(values)
+
+    if (any(present)) {
+
+      lines <- paste0(
+        "<b>",
+        htmltools::htmlEscape(extra_columns[present]),
+        ":</b> ",
+        htmltools::htmlEscape(unname(values[present]))
+      )
+
+      node_data$Feature_annotation_hover[i] <- paste0(
+        "<br><br><b>Feature-table annotations</b><br>",
+        paste(lines, collapse = "<br>")
+      )
+    }
   }
 }
-
 
 sirius_text <- node_data$SIRIUS_values
 
@@ -4097,6 +4176,10 @@ htmltools::htmlEscape(other_text),
   )
 )
 
+node_data$Hover <- paste0(
+  node_data$Hover,
+  node_data$Feature_annotation_hover
+)
 
 if (volcano_added) {
 
