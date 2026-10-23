@@ -105,11 +105,7 @@ output$upload_tab_error <- renderUI({
   })
 
  observe({
-  ids <- c(
-    "dl_volcano",
-    "dl_matrix",
-    "dl_autoplotter_zip"
-  )
+  ids <- "dl_volcano"
 
   if (procReady()) {
     lapply(ids, shinyjs::enable)
@@ -8703,6 +8699,188 @@ additional_details_ui <- tags$details(
     }
   })
 
+  # Prepare export data independently of statistical processing.
+current_export_data <- reactive({
+
+  b <- built()
+  labs <- as.character(labels_vec())
+  X <- as.matrix(b$mat)
+
+  validate(
+    need(
+      nrow(X) > 0L && ncol(X) > 0L,
+      "Select sample columns and feature identifiers first."
+    ),
+    need(
+      length(labs) == nrow(X),
+      "Each sample must have a group label."
+    ),
+    need(
+      all(!is.na(labs) & nzchar(trimws(labs))),
+      "Complete the group labels before exporting."
+    )
+  )
+
+  if (identical(input$do_mvi, "yes")) {
+
+    X <- impute_lod_random(
+      X,
+      noise_mode = input$noise_mode %||% "quantile",
+      noise_quantile = input$noise_quantile %||% 0.25,
+      noise_manual = input$noise_manual %||% 50,
+      sd_val = input$noise_sd %||% 30,
+      seed = 1234
+    )
+  }
+
+  df <- data.frame(
+    Label = labs,
+    as.data.frame(
+      X,
+      check.names = FALSE,
+      stringsAsFactors = FALSE
+    ),
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+
+  list(
+    df_used = df,
+    sample_names = rownames(b$mat),
+    fmap = b$fmap
+  )
+})
+
+current_export_annotations <- reactive({
+
+  out <- annotation_export_table()
+
+  if (
+    isTRUE(input$use_main_gnps_pairs) &&
+    !is.null(input$file_main_gnps_pairs)
+  ) {
+
+    peak <- raw_df()
+    id_col <- input$component_match_col
+
+    validate(
+      need(
+        length(id_col) == 1L &&
+          nzchar(id_col) &&
+          id_col %in% names(peak),
+        "Select the peak-table feature ID column for GNPS pairs."
+      ),
+      need(
+        nrow(out) == nrow(peak),
+        "Annotation export rows do not match the peak table."
+      )
+    )
+
+    ids <- tibble::tibble(
+      export_row = seq_len(nrow(peak)),
+      ClusterID = trimws(as.character(peak[[id_col]]))
+    ) %>%
+      dplyr::filter(
+        !is.na(ClusterID),
+        nzchar(ClusterID)
+      )
+
+    joined <- merge(
+      ids,
+      main_component_map(),
+      by = "ClusterID",
+      all = FALSE,
+      sort = FALSE
+    )
+
+    collapse_ids <- function(x) {
+      x <- unique(as.character(x))
+      x <- x[!is.na(x) & nzchar(x)]
+
+      paste(
+        stringr::str_sort(x, numeric = TRUE),
+        collapse = ", "
+      )
+    }
+
+    network <- joined %>%
+      dplyr::group_by(export_row) %>%
+      dplyr::summarise(
+        GNPS_ClusterID = collapse_ids(ClusterID),
+        GNPS_ComponentIndex = collapse_ids(ComponentIndex),
+        .groups = "drop"
+      )
+
+    index <- match(seq_len(nrow(out)), network$export_row)
+
+    out$GNPS_ClusterID <- network$GNPS_ClusterID[index]
+    out$GNPS_ComponentIndex <-
+      network$GNPS_ComponentIndex[index]
+  }
+
+  out
+})
+
+# AutoPlotter names follow the current matrix feature order.
+current_autoplotter_names <- reactive({
+
+  export <- current_export_data()
+  annotations <- current_export_annotations()
+
+  feature_ids <- as.character(export$fmap$Feature)
+
+  index <- match(
+    feature_ids,
+    as.character(annotations$Feature_ID)
+  )
+
+  validate(
+    need(
+      !anyNA(index),
+      "Some exported features could not be matched to their annotations."
+    )
+  )
+
+  out <- as.data.frame(
+    annotations[index, , drop = FALSE],
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+
+  names(out)[names(out) == "Feature_ID"] <- "Name"
+
+  rownames(out) <- NULL
+  out
+})
+
+# Enable exports once their own required inputs are valid.
+observe({
+
+  matrix_ready <- tryCatch({
+    current_export_data()
+    TRUE
+  }, error = function(e) FALSE)
+
+  shinyjs::toggleState(
+    "dl_matrix",
+    condition = matrix_ready
+  )
+
+  autoplotter_ready <- if (matrix_ready) {
+    tryCatch({
+      current_autoplotter_names()
+      TRUE
+    }, error = function(e) FALSE)
+  } else {
+    FALSE
+  }
+
+  shinyjs::toggleState(
+    "dl_autoplotter_zip",
+    condition = autoplotter_ready
+  )
+})
+
   # ---- Downloads
   output$dl_annotation <- downloadHandler(
 
@@ -8714,78 +8892,12 @@ additional_details_ui <- tags$details(
   },
 
   content = function(file) {
-
-    out <- annotation_export_table()
-
-    if (
-  isTRUE(input$use_main_gnps_pairs) &&
-  !is.null(input$file_main_gnps_pairs)
-) {
-
-  peak <- raw_df()
-  id_col <- input$component_match_col
-
-  validate(
-    need(
-      length(id_col) == 1L &&
-        nzchar(id_col) &&
-        id_col %in% names(peak),
-      "Select the peak-table feature ID column for GNPS pairs."
-    ),
-    need(
-      nrow(out) == nrow(peak),
-      "Annotation export rows do not match the peak table."
-    )
+  data.table::fwrite(
+    current_export_annotations(),
+    file,
+    na = ""
   )
-
-  ids <- tibble::tibble(
-    export_row = seq_len(nrow(peak)),
-    ClusterID = trimws(as.character(peak[[id_col]]))
-  ) %>%
-    dplyr::filter(
-      !is.na(ClusterID),
-      nzchar(ClusterID)
-    )
-
-  joined <- merge(
-    ids,
-    main_component_map(),
-    by = "ClusterID",
-    all = FALSE,
-    sort = FALSE
-  )
-
-  collapse_ids <- function(x) {
-    x <- unique(as.character(x))
-    x <- x[!is.na(x) & nzchar(x)]
-
-    paste(
-      stringr::str_sort(x, numeric = TRUE),
-      collapse = ", "
-    )
-  }
-
-  network <- joined %>%
-    dplyr::group_by(export_row) %>%
-    dplyr::summarise(
-      GNPS_ClusterID = collapse_ids(ClusterID),
-      GNPS_ComponentIndex = collapse_ids(ComponentIndex),
-      .groups = "drop"
-    )
-
-  index <- match(seq_len(nrow(out)), network$export_row)
-
-  out$GNPS_ClusterID <- network$GNPS_ClusterID[index]
-  out$GNPS_ComponentIndex <-
-    network$GNPS_ComponentIndex[index]
 }
-
-    data.table::fwrite(
-      out,
-      file,
-      na = ""
-    )
-  }
 )
 
  output$dl_volcano <- downloadHandler(
@@ -8956,19 +9068,27 @@ additional_details_ui <- tags$details(
 )
 
 output$dl_matrix <- downloadHandler(
+
   filename = function() {
     paste0(dataset_name(), "_MetaboAnalyst_table.csv")
   },
-  content = function(file) {
-    req(rv$df_used, rv$mat)
 
-    out <- as.data.frame(rv$df_used, check.names = FALSE, stringsAsFactors = FALSE)
-    out <- cbind(
-      Sample = rownames(rv$mat),
-      out
+  content = function(file) {
+
+    export <- current_export_data()
+
+    out <- data.frame(
+      Sample = export$sample_names,
+      export$df_used,
+      check.names = FALSE,
+      stringsAsFactors = FALSE
     )
 
-    data.table::fwrite(out, file, na = "")
+    data.table::fwrite(
+      out,
+      file,
+      na = ""
+    )
   }
 )
 
@@ -8979,7 +9099,7 @@ output$dl_autoplotter_zip <- downloadHandler(
   },
 
   content = function(file) {
-    req(rv$df_used, rv$mat, rv$fmap)
+    export <- current_export_data()
 
     zip_dir <- tempfile("autoplotter_")
     dir.create(zip_dir, recursive = TRUE, showWarnings = FALSE)
@@ -8990,19 +9110,16 @@ output$dl_autoplotter_zip <- downloadHandler(
     name_file <- file.path(zip_dir, "name_map.csv")
 
     autoplotter_data <- make_autoplotter_data(
-      df_used = rv$df_used,
-      sample_names = rownames(rv$mat)
-    )
-
-    autoplotter_metadata <- make_autoplotter_metadata(
-      df_used = rv$df_used,
-      sample_names = rownames(rv$mat)
-    )
-
-    autoplotter_name_map <- make_autoplotter_name_map(
-  fmap = rv$fmap,
-  volcano = add_gnps_network_annotations(rv$volcano)
+  df_used = export$df_used,
+  sample_names = export$sample_names
 )
+
+autoplotter_metadata <- make_autoplotter_metadata(
+  df_used = export$df_used,
+  sample_names = export$sample_names
+)
+
+autoplotter_name_map <- current_autoplotter_names()
 
     data.table::fwrite(autoplotter_data, data_file, na = "")
     data.table::fwrite(autoplotter_metadata, meta_file, na = "")

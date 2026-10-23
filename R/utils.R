@@ -1586,7 +1586,7 @@ volcano_main_ui <- function() {
                 "Z-score" = "zscore",
                 "None" = "none"
               ),
-              selected = "uv"
+              selected = "zscore"
             )
           ),
 
