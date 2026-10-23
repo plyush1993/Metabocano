@@ -204,7 +204,7 @@ tags$head(tags$style(HTML("
 tags$head(
   tags$title("Metabocano"),
   tags$link(rel = "icon", type = "image/png",
-            href = "https://raw.githubusercontent.com/plyush1993/Metabocano/main/inst/www/sticker.png")
+            href = "www/sticker.png")
 ),
 
 tags$head(
@@ -275,7 +275,7 @@ div(class = "app-footer", HTML('
   ",
 
   tags$img(
-    src = 'https://raw.githubusercontent.com/plyush1993/Metabocano/main/inst/www/sticker.png',
+    src = 'www/sticker.png',
     height = '150px',
     style = 'margin-right: 20px;'
   ),
